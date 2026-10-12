@@ -103,6 +103,11 @@ class BrowserSession:
 
     def _url(self, target: str) -> str:
         if target.startswith("http"):
+            host = (urlparse(target).hostname or "").lower()
+            allowed = [self.cfg.host.lower(), "ntu.ac.uk", "microsoftonline.com", "live.com"]
+            allowed += [h.strip().lower() for h in os.environ.get("NOW_BROWSER_ALLOWED_HOSTS", "").split(",") if h.strip()]
+            if not any(host == a or host.endswith("." + a) for a in allowed):
+                raise ValueError(f"The browser only opens NTU pages (and Microsoft sign-in); {host} is not allowed. Add it to NOW_BROWSER_ALLOWED_HOSTS if it is one of NTU's services.")
             return target
         return self.cfg.base_url + (target if target.startswith("/") else "/" + target)
 
@@ -180,8 +185,27 @@ class BrowserSession:
             return []
 
     def _frames(self):
-        """Embedded frames with real content (NOW's external tools, such as the Timetable, live in one)."""
-        return [f for f in self._page.frames if f != self._page.main_frame and f.url not in ("", "about:blank")]
+        """Embedded frames (NOW's external tools, such as the Timetable, live in one)."""
+        return [f for f in self._page.frames if f != self._page.main_frame]
+
+    async def _iframe_srcs(self) -> list[dict[str, str]]:
+        try:
+            return await self._page.evaluate(
+                "() => Array.from(document.querySelectorAll('iframe')).map(f => ({src: f.src || f.getAttribute('src') || '', id: f.id || '', name: f.name || ''}))"
+            )
+        except Exception:  # noqa: BLE001
+            return []
+
+    async def _wait_for_frame_content(self, seconds: float) -> None:
+        """External tools load through a redirect chain inside their frame; give them a moment."""
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            for fr in self._frames():
+                if fr.url not in ("", "about:blank") and (await self._text(200, fr)):
+                    return
+            if not await self._iframe_srcs():
+                return
+            await asyncio.sleep(0.5)
 
     async def _page_summary(self, max_chars: int, with_links: bool) -> dict[str, Any]:
         info: dict[str, Any] = {
@@ -196,22 +220,28 @@ class BrowserSession:
             info["tables"] = tables
         frames = []
         for fr in self._frames():
+            entry: dict[str, Any] = {"url": fr.url, "name": fr.name or ""}
             text = await self._text(max_chars, fr)
-            if not text:
-                continue
-            entry: dict[str, Any] = {"url": fr.url, "text": text}
-            if with_links:
-                entry["links"] = await self._links(fr)
-            ftables = await self._tables(fr)
-            if ftables:
-                entry["tables"] = ftables
+            if text:
+                entry["text"] = text
+                if with_links:
+                    entry["links"] = await self._links(fr)
+                ftables = await self._tables(fr)
+                if ftables:
+                    entry["tables"] = ftables
             frames.append(entry)
+        iframes = await self._iframe_srcs()
+        if iframes:
+            info["iframes"] = iframes
         if frames:
             info["frames"] = frames
-            if len(info["text"]) < 400:
+            with_text = [f for f in frames if f.get("text")]
+            if with_text and len(info["text"]) < 400:
                 main = info["text"]
-                info["text"] = max(frames, key=lambda f: len(f["text"]))["text"]
+                info["text"] = max(with_text, key=lambda f: len(f["text"]))["text"]
                 info["note"] = f"The page's own text was only the NOW shell ({main[:60]!r}...); 'text' shows the embedded frame. All frames are under 'frames'."
+            elif not with_text:
+                info["note"] = "The page embeds frames that rendered no text (still loading, blocked, or a sign-in page that refuses to be framed); their URLs are under 'frames'."
         return info
 
     # -- tools ------------------------------------------------------------------
@@ -230,6 +260,7 @@ class BrowserSession:
                 await self._settle(timeout_ms)
                 if self._on_login_page():
                     raise NeedsLogin("The browser keeps landing on the sign-in page; run the login flow.")
+            await self._wait_for_frame_content(12)
             await self.save_state()
             return await self._page_summary(max_chars, with_links)
 
@@ -317,7 +348,7 @@ class BrowserSession:
 
             async def find_frame():
                 # The tool may sit in a nested frame: prefer the one that holds a table, else the wordiest.
-                best, best_len = None, -1
+                best, best_len = None, 0
                 for fr in self._frames():
                     if await self._tables(fr):
                         return fr
@@ -326,11 +357,18 @@ class BrowserSession:
                         best, best_len = fr, n
                 return best
 
+            await self._wait_for_frame_content(25)
             weeks: list[dict[str, Any]] = []
             ical = None
             frame = await find_frame()
             if frame is None:
-                return {"error": "The timetable page has no embedded frame yet; try again in a moment.", "url": self._page.url}
+                return {
+                    "error": "The Timetable tool's frame rendered nothing in the server's browser.",
+                    "url": self._page.url,
+                    "frames": [{"url": f.url, "name": f.name or ""} for f in self._frames()],
+                    "iframes": await self._iframe_srcs(),
+                    "hint": "If a frame URL is on another NTU host, that tool needs its own sign-in: open it with now_browse (full URL) to see what it shows.",
+                }
             for i in range(max(0, weeks_ahead) + 1):
                 if i:
                     btn = frame.get_by_role("button", name="Next week")
