@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ntu-now-mcp"
-version = "0.3.0"
+version = "0.3.1"
 description = "Personal read-only MCP connector for NTU's NOW (Brightspace)"
 requires-python = ">=3.11"
 dependencies = [
@@ -30,3 +30,6 @@ now-login = "now_mcp.login:main"
 
 [tool.setuptools.packages.find]
 include = ["now_mcp*"]
+
+[tool.setuptools.package-data]
+now_mcp = ["board.html"]

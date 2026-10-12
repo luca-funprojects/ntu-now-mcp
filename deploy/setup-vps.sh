@@ -79,6 +79,7 @@ echo "==> Building and starting (first build takes a few minutes)"
 docker compose up -d --build
 
 echo "https://${HOST}/${SECRET}/mcp" > CONNECTOR_URL
+echo "https://${HOST}/${SECRET}/board" > BOARD_URL
 if [[ "$OPS_ENABLE" == "1" ]]; then echo "https://${HOST}/${OPS}/mcp" > OPS_URL; else rm -f OPS_URL; fi
 
 echo
@@ -92,6 +93,8 @@ echo
 echo "=================================================================="
 echo " NOW connector URL (claude.ai -> Settings -> Connectors -> Add custom):"
 echo "   $(cat CONNECTOR_URL)"
+echo " Study Board (open in any browser; bookmark it, the address is the key):"
+echo "   $(cat BOARD_URL)"
 if [[ -f OPS_URL ]]; then
   echo " Server ops URL (add as a second connector, e.g. 'NTU Server Ops'):"
   echo "   $(cat OPS_URL)"

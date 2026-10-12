@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="color-scheme" content="light dark">
+<style>html{color-scheme:light dark}body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<title>Luca's Study Board</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  /* Layout: a module rail on the left (tabs with progress), a main column with the "now" strip
+     (NTU week, next sessions, deadlines), the "up next" picks, then the chosen module's weeks as a
+     dated list. On phones the rail becomes a wrapping chip strip above the main column. */
+  :root {
+    --bg: #f5f7f5;
+    --surface: #ffffff;
+    --fg: #1b221f;
+    --muted: #5f6b66;
+    --line: #d7ddd9;
+    --accent: #0f6e6a;
+    --accent-ink: #ffffff;
+    --now: #e6f0ed;
+    --todo: #8a948f;
+    --doing: #b2731c;
+    --done: #2e7d4f;
+    --revisit: #b4423b;
+    --warn-bg: #fff4e0;
+    --font-display: "Bricolage Grotesque", "Source Sans 3", system-ui, sans-serif;
+    --font-body: "Source Sans 3", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --radius: 6px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #131816; --surface: #1b2220; --fg: #e7ebe8; --muted: #a2aca6; --line: #2c3632;
+      --accent: #62c6bf; --accent-ink: #0d1917; --now: #1e2d29;
+      --todo: #7f8a84; --doing: #e3ab44; --done: #6ccf95; --revisit: #f28b84; --warn-bg: #2d2516;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #131816; --surface: #1b2220; --fg: #e7ebe8; --muted: #a2aca6; --line: #2c3632;
+    --accent: #62c6bf; --accent-ink: #0d1917; --now: #1e2d29;
+    --todo: #7f8a84; --doing: #e3ab44; --done: #6ccf95; --revisit: #f28b84; --warn-bg: #2d2516;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.45; padding-inline: 16px; padding-block: 16px 40px; }
+  h1, h2, h3 { font-family: var(--font-display); margin: 0; text-wrap: balance; }
+  h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: 17px; font-weight: 700; }
+  h3 { font-size: 16px; font-weight: 700; }
+  a { color: var(--accent); }
+  button, select { font: inherit; color: inherit; }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .eyebrow { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .muted { color: var(--muted); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .app { display: grid; grid-template-columns: 228px minmax(0, 1fr); gap: 24px; max-width: 1180px; margin-inline: auto; }
+  @media (max-width: 780px) { .app { grid-template-columns: minmax(0, 1fr); gap: 16px; } }
+
+  /* rail */
+  .rail { display: flex; flex-direction: column; gap: 14px; }
+  .brand { display: flex; flex-direction: column; gap: 2px; }
+  .brand .sub { font-size: 12px; color: var(--muted); }
+  .tabs { display: flex; flex-direction: column; gap: 6px; }
+  @media (max-width: 780px) { .tabs { flex-direction: row; flex-wrap: wrap; } }
+  .tab { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 0 8px; align-items: center; text-align: left; padding: 8px 10px; border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); cursor: pointer; }
+  @media (max-width: 780px) { .tab { grid-template-columns: auto; flex: 1 1 100px; } .tab .tab-name, .tab .bar { display: none; } }
+  .tab[aria-selected="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+  .tab .code { font-family: var(--font-mono); font-weight: 600; font-size: 14px; }
+  .tab .tab-name { font-size: 12px; color: var(--muted); line-height: 1.25; }
+  .tab .bar { grid-column: 1 / -1; height: 4px; background: var(--line); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .tab .bar i { display: block; height: 100%; width: 0; background: var(--done); transition: width .3s ease; }
+  .tab .count { grid-column: 1 / -1; font-size: 11px; color: var(--muted); margin-top: 3px; }
+  @media (max-width: 780px) { .tab .count { display: none; } }
+  .conn { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: flex-start; line-height: 1.35; }
+  .conn .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--todo); margin-top: 5px; flex: none; }
+  .conn.ok .dot { background: var(--done); }
+  .conn.bad .dot { background: var(--revisit); }
+
+  /* main */
+  main { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+  .now { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; min-width: 0; }
+  .panel .eyebrow { margin-bottom: 6px; }
+  .today { font-family: var(--font-display); font-size: 20px; font-weight: 700; }
+  .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: baseline; font-size: 14px; }
+  .row .when { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+  .row .what { min-width: 0; overflow-wrap: anywhere; }
+  .chip { display: inline-block; font-family: var(--font-mono); font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--fg); vertical-align: middle; }
+  .chip.soon { border-color: var(--doing); color: var(--doing); }
+  .chip.overdue { border-color: var(--revisit); color: var(--revisit); }
+  .empty { color: var(--muted); font-size: 14px; }
+
+  .picks { display: flex; flex-direction: column; gap: 10px; }
+  .pick { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 14px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; }
+  @media (max-width: 520px) { .pick { grid-template-columns: minmax(0, 1fr); } }
+  .pick .why { font-size: 13px; color: var(--muted); }
+  .pick .name { font-weight: 600; }
+
+  .module-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+  .module-head .code { font-family: var(--font-mono); color: var(--muted); font-size: 13px; }
+  .units { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  .unit { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: grid; gap: 10px; }
+  .unit.current { background: var(--now); border-color: var(--accent); }
+  .unit.admin { opacity: .85; }
+  .unit-head { display: grid; grid-template-columns: 62px minmax(0, 1fr) auto; gap: 10px; align-items: start; }
+  @media (max-width: 520px) { .unit-head { grid-template-columns: 62px minmax(0, 1fr); } .unit-head .status-pill { grid-column: 2; justify-self: start; } }
+  .wk { display: flex; flex-direction: column; }
+  .wk .n { font-family: var(--font-mono); font-size: 15px; font-weight: 600; }
+  .wk .d { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .status-pill { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .status-pill[data-s="not_started"] { color: var(--todo); }
+  .status-pill[data-s="in_progress"] { color: var(--doing); }
+  .status-pill[data-s="done"] { color: var(--done); }
+  .status-pill[data-s="revisit"] { color: var(--revisit); }
+  .sessions, .files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 13.5px; }
+  .sessions li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; }
+  .sessions .when { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+  .files li { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 8px; align-items: baseline; min-width: 0; }
+  .files .k { font-family: var(--font-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .files .t { overflow-wrap: anywhere; }
+  .files .t.dim { color: var(--muted); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); cursor: pointer; text-decoration: none; font-weight: 600; font-size: 14px; }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .btn[disabled] { opacity: .5; cursor: default; }
+  .status-select { padding: 5px 8px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); }
+  .note { font-size: 13px; color: var(--muted); }
+  .msg { font-size: 13px; padding: 8px 10px; border-radius: var(--radius); background: var(--warn-bg); border: 1px solid var(--line); }
+  .toast { position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 999px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+  .toast.show { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) { .tab .bar i, .toast { transition: none; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <h1>Study Board</h1>
+      <span class="sub">NTU 2026/27 · BSc Software Engineering, year 3</span>
+    </div>
+    <div class="tabs" id="tabs" role="tablist" aria-label="Modules"></div>
+    <div class="conn" id="conn"><span class="dot"></span><span id="conn-text">Connecting to NTU NOW…</span></div>
+  </aside>
+
+  <main>
+    <section class="now" aria-label="Right now">
+      <div class="panel">
+        <div class="eyebrow">Today</div>
+        <div class="today" id="today">—</div>
+        <div class="muted" id="today-sub">NTU week from the timetable feed</div>
+      </div>
+      <div class="panel">
+        <div class="eyebrow">Next sessions</div>
+        <ul class="list" id="next"><li class="empty">Loading your timetable…</li></ul>
+      </div>
+      <div class="panel">
+        <div class="eyebrow">Due</div>
+        <ul class="list" id="due"><li class="empty">Loading deadlines from NOW…</li></ul>
+      </div>
+    </section>
+
+    <section aria-label="Up next">
+      <div class="eyebrow" style="margin-bottom:8px">Up next</div>
+      <div class="picks" id="picks"><div class="empty">Worked out from your timetable and what you have marked done.</div></div>
+    </section>
+
+    <section id="module" aria-label="Module weeks">
+      <div class="module-head">
+        <h2 id="module-name">Choose a module</h2>
+        <span class="code" id="module-code"></span>
+        <span class="muted" id="module-progress"></span>
+      </div>
+      <div id="module-msg" hidden></div>
+      <ul class="units" id="units"><li class="empty">Each week of the module appears here with its sessions, its files on NOW and your status.</li></ul>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  const SERVER = "NTU NOW";
+  const MODULES = [
+    { ou: 1174485, short: "AAD",  code: "SOFT30121", name: "Advanced Analysis & Design" },
+    { ou: 1179267, short: "SCCC", code: "COMP30231", name: "Service-Centric & Cloud Computing" },
+    { ou: 1177024, short: "MPA",  code: "ITEC31041", name: "Mobile Platform Applications" },
+    { ou: 1174484, short: "ASE",  code: "SOFT30161", name: "Advanced Software Engineering" },
+    { ou: 1209768, short: "FYP",  code: "COMP30151", name: "Final Year Project" },
+  ];
+  const STATUS_LABEL = { not_started: "Not started", in_progress: "In progress", done: "Done", revisit: "Revisit" };
+  const KIND_LABEL = { slides: "slides", lecture: "lecture", notes: "notes", lab: "lab", reading: "reading", resource: "file", page: "page", recording: "video" };
+  const byOu = Object.fromEntries(MODULES.map(m => [m.ou, m]));
+
+  const $ = (id) => document.getElementById(id);
+  const plans = {};          // ou -> plan payload
+  let timetable = null;
+  let deadlines = null;
+    let selected = MODULES[0].ou;
+  try { const s = localStorage.getItem("studyboard.module"); if (s && byOu[+s]) selected = +s; } catch (e) {}
+
+  // ---------- rendering helpers ----------
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmtDate = (iso) => { if (!iso) return ""; const d = new Date(iso + "T00:00:00"); return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }); };
+  const fmtRange = (a, b) => { if (!a) return ""; const da = new Date(a + "T00:00:00"), db = new Date(b + "T00:00:00"); const m = (d) => d.toLocaleDateString("en-GB", { month: "short" }); return da.getMonth() === db.getMonth() ? `${da.getDate()}–${db.getDate()} ${m(db)}` : `${da.getDate()} ${m(da)} – ${db.getDate()} ${m(db)}`; };
+  const shortRoom = (room) => String(room || "").replace(/^\(Clif\)\s*/, "").replace(/^\(Clifton\)\s*/, "");
+  const unitTitle = (u) => String(u.unit).replace(/^week\s*\d+\s*[:\-–(]\s*/i, "").replace(/\)\s*$/, "");
+  const promptFor = (m, u) => `Let's do ${m.short} ${u.unit}`;
+  const chatLink = (m, u) => "https://claude.ai/new?q=" + encodeURIComponent(promptFor(m, u));
+  const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+
+  let toastTimer;
+  function toast(text) { const t = $("toast"); t.textContent = text; t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2200); }
+
+  function errorCopy(err) {
+    const code = err && err.code;
+    switch (code) {
+      case "server_not_connected": return `NTU NOW is not connected for you. Add it in claude.ai → Settings → Connectors, then reload.`;
+      case "selection_required": return `More than one connector is called NTU NOW; choose one when claude.ai asks, then reload.`;
+      case "needs_reauth": return `NTU NOW needs reconnecting in claude.ai → Settings → Connectors.`;
+      case "not_in_manifest": return `This page was not allowed to use NTU NOW. Open the page's Permissions menu and allow it.`;
+      case "approval_required": return `claude.ai is waiting for your approval to let this page use NTU NOW.`;
+      case "blocked_by_policy": return `Your organisation's policy blocks this call.`;
+      case "server_unavailable": return `The NOW server did not answer. It may be restarting; try again in a moment.`;
+      case "tool_error": return `NOW returned an error: ${err.message || "no detail"}`;
+      case "not_granted": case "capability_disabled": case "capability_removed": return `Live data is not available in this view. Open the page in claude.ai.`;
+      default: return `Something went wrong talking to NTU NOW (${code || "unknown"}): ${err && err.message ? err.message : ""}`;
+    }
+  }
+
+  // ---------- tabs ----------
+  function renderTabs() {
+    const host = $("tabs");
+    host.innerHTML = MODULES.map(m => {
+      const p = plans[m.ou];
+      const done = p ? p.progress.done : 0, total = p ? p.progress.total : 0;
+      const pct = total ? Math.round(100 * done / total) : 0;
+      return `<button class="tab" role="tab" id="tab-${m.ou}" aria-selected="${m.ou === selected}" data-ou="${m.ou}">
+        <span class="code">${m.short}</span><span class="tab-name">${esc(m.name)}</span>
+        <span class="bar"><i style="width:${pct}%"></i></span>
+        <span class="count">${p ? `${done} of ${total} weeks done` : "loading…"}</span></button>`;
+    }).join("");
+    host.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => { selected = +b.dataset.ou; try { localStorage.setItem("studyboard.module", String(selected)); } catch (e) {} renderTabs(); renderModule(); }));
+  }
+
+  // ---------- now strip ----------
+  function renderNow() {
+    const t = timetable;
+    const dnow = new Date();
+    const todayText = dnow.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
+    const anyPlan = Object.values(plans)[0];
+    const wk = (t && t.weeks && t.weeks[0] && t.weeks[0].week) || (anyPlan && anyPlan.ntu_week_now);
+    $("today").textContent = todayText;
+    $("today-sub").textContent = wk ? `NTU week ${wk}` + (t && t.sessions_known_until ? ` · timetable known to ${fmtDate(t.sessions_known_until)}` : "") : "NTU week from the timetable feed";
+    const next = $("next");
+    if (t && Array.isArray(t.upcoming)) {
+      const rows = t.upcoming.slice(0, 6);
+      next.innerHTML = rows.length ? rows.map(s => {
+        const m = MODULES.find(x => x.code === s.module_code);
+        return `<li class="row"><span class="when">${esc(s.day.slice(0, 3))} ${esc(s.start)}</span><span class="what"><b>${esc(m ? m.short : s.module_code || "")}</b> ${esc(s.type || "")} · ${esc(shortRoom(s.room))}</span></li>`;
+      }).join("") : `<li class="empty">Nothing in the next ${t.upcoming_hours || 72} hours.</li>`;
+    }
+    const due = $("due");
+    if (deadlines && Array.isArray(deadlines.items)) {
+      const items = deadlines.items.filter(i => !(i.submission && i.submission.submitted)).slice(0, 6);
+      due.innerHTML = items.length ? items.map(i => {
+        const m = byOu[i.ou];
+        const days = Math.round(i.days_left);
+        const cls = i.overdue ? "overdue" : (days <= 7 ? "soon" : "");
+        const label = i.overdue ? "overdue" : (days <= 0 ? "today" : `${days} d`);
+        return `<li class="row"><span class="chip ${cls}">${label}</span><span class="what"><b>${esc(m ? m.short : "")}</b> ${esc(i.title)} <span class="muted">· ${esc(i.when_local || i.due_local || "")}</span></span></li>`;
+      }).join("") : `<li class="empty">Nothing due in the next 60 days.</li>`;
+    }
+  }
+
+  // ---------- picks ----------
+  function renderPicks() {
+    const host = $("picks");
+    const today = todayISO();
+    const horizon = new Date(); horizon.setDate(horizon.getDate() + 7);
+    const hz = `${horizon.getFullYear()}-${String(horizon.getMonth() + 1).padStart(2, "0")}-${String(horizon.getDate()).padStart(2, "0")}`;
+    const cands = [];
+    for (const m of MODULES) {
+      const p = plans[m.ou]; if (!p) continue;
+      for (const u of p.units) {
+        if (u.admin || u.status === "done" || !u.week) continue;
+        const next = (u.sessions || []).map(s => s.date).filter(d => d && d >= today).sort()[0] || null;
+        const soon = next && next <= hz;
+        cands.push({ m, u, next, soon });
+      }
+    }
+    const key = (c) => [c.soon ? 0 : 1, c.u.status === "revisit" ? 0 : 1, c.next || "9999", c.u.start || "9999"];
+    cands.sort((a, b) => { const ka = key(a), kb = key(b); for (let i = 0; i < ka.length; i++) { if (ka[i] < kb[i]) return -1; if (ka[i] > kb[i]) return 1; } return 0; });
+    const top = cands.slice(0, 3);
+    if (!Object.keys(plans).length) return;
+    host.innerHTML = top.length ? top.map(({ m, u, next, soon }) => {
+      const sess = soon ? (u.sessions || []).find(s => s.date === next) : null;
+      let why;
+      if (sess) why = `${esc(sess.type || "Session")} ${fmtDate(sess.date)} ${esc(sess.start)}, ${esc(shortRoom(sess.room))}`;
+      else if (u.status === "revisit") why = "You flagged this to revisit";
+      else if (u.is_past) why = `Behind: this was w/c ${fmtDate(u.start)}`;
+      else why = `This week`;
+      return `<div class="pick"><div><div class="name">${esc(m.short)} · ${esc(u.unit)}</div><div class="why">${why}</div></div>
+        <a class="btn primary" href="${chatLink(m, u)}" target="_blank" rel="noopener">Study with Claude</a></div>`;
+    }).join("") : `<div class="empty">Everything released so far is marked done. Nice.</div>`;
+  }
+
+  // ---------- module ----------
+  function renderModule() {
+    const m = byOu[selected];
+    const p = plans[selected];
+    $("module-name").textContent = m.name;
+    $("module-code").textContent = m.code;
+    $("module-progress").textContent = p ? `${p.progress.done} of ${p.progress.total} weeks done` : "";
+    const host = $("units");
+    if (!p) { host.innerHTML = `<li class="empty">Loading ${esc(m.short)} from NOW…</li>`; return; }
+    const units = p.units.filter(u => !u.admin).concat(p.units.filter(u => u.admin));
+    host.innerHTML = units.map((u, i) => {
+      const cls = ["unit", u.is_current_week ? "current" : "", u.admin ? "admin" : ""].join(" ");
+      const wk = u.week ? `<span class="n">W${u.week}</span><span class="d">${fmtRange(u.start, u.end)}</span>` : `<span class="n">—</span>`;
+      const sessions = (u.sessions || []).map(s => `<li><span class="when">${esc(s.day.slice(0, 3))} ${esc(s.date.slice(8))}/${esc(s.date.slice(5, 7))} ${esc(s.start)}–${esc(s.end)}</span><span>${esc(s.type || "")} · ${esc(shortRoom(s.room))}${s.lecturer ? ` · ${esc(s.lecturer)}` : ""}</span></li>`).join("");
+      const files = (u.files || []).map(f => `<li><span class="k">${esc(KIND_LABEL[f.kind] || f.kind)}</span><span class="t ${f.kind === "recording" ? "dim" : ""}">${esc(f.title)}</span></li>`).join("");
+      const sel = `<select class="status-select" id="status-${m.ou}-${i}" data-ou="${m.ou}" data-unit="${esc(u.unit)}" aria-label="Status for ${esc(u.unit)}">${Object.entries(STATUS_LABEL).map(([k, v]) => `<option value="${k}" ${k === u.status ? "selected" : ""}>${v}</option>`).join("")}</select>`;
+      const study = u.admin ? "" : `<a class="btn primary" href="${chatLink(m, u)}" target="_blank" rel="noopener">Study with Claude</a><button class="btn" type="button" data-copy="${esc(promptFor(m, u))}">Copy prompt</button>`;
+      return `<li class="${cls}">
+        <div class="unit-head"><div class="wk">${wk}</div><h3>${esc(u.admin ? u.unit : unitTitle(u))}</h3><span class="status-pill" data-s="${u.status}">${STATUS_LABEL[u.status] || u.status}</span></div>
+        ${sessions ? `<ul class="sessions">${sessions}</ul>` : (u.week && p.timetable_available ? `<div class="note">No timetabled session this week.</div>` : "")}
+        ${files ? `<ul class="files">${files}</ul>` : `<div class="note">Nothing downloaded for this unit yet.</div>`}
+        ${u.status_note ? `<div class="note">${esc(u.status_note)}</div>` : ""}
+        <div class="actions">${study}${sel}</div>
+      </li>`;
+    }).join("");
+    host.querySelectorAll("[data-copy]").forEach(b => b.addEventListener("click", () => {
+      const text = b.dataset.copy;
+      const fallback = () => { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); toast("Prompt copied"); } catch (e) { toast(text); } ta.remove(); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => toast("Prompt copied"), fallback); else fallback();
+    }));
+    host.querySelectorAll(".status-select").forEach(s => s.addEventListener("change", onStatusChange));
+  }
+
+  // ---------- data (same-origin JSON API served by the connector) ----------
+  function setConn(state, text) { const c = $("conn"); c.className = "conn " + state; $("conn-text").textContent = text; }
+  const API = new URL("api/", location.href);
+  async function api(path, opts) {
+    const r = await fetch(new URL(path, API), Object.assign({ headers: { "Accept": "application/json" } }, opts || {}));
+    let body = null; try { body = await r.json(); } catch (e) {}
+    if (!r.ok || (body && body.error)) { const err = new Error((body && (body.message || body.error)) || `HTTP ${r.status}`); err.code = body && body.error; err.status = r.status; throw err; }
+    return body;
+  }
+  function errorCopy(err) {
+    if (err && err.code === "needs_login") return "The NOW session has expired: ask Claude to run now_login_start, then reload.";
+    if (err && err.status === 404) return "The server does not know this page's address; check the link.";
+    if (err && (err.status === 502 || err.status === 503 || err.name === "TypeError")) return "The server did not answer. It may be restarting; try again in a moment.";
+    return `Something went wrong: ${err && err.message ? err.message : "unknown error"}`;
+  }
+
+  async function loadModule(m) {
+    try {
+      const p = await api(`plan/${m.ou}`);
+      plans[m.ou] = p;
+      renderTabs(); renderPicks(); renderNow(); if (m.ou === selected) { showModuleMsg(""); renderModule(); }
+    } catch (err) {
+      if (m.ou === selected) { showModuleMsg(errorCopy(err)); renderModule(); }
+      throw err;
+    }
+  }
+  async function loadAll() {
+    setConn("", "Reading NOW…");
+    const jobs = [
+      api("timetable?hours=72").then(t => { timetable = t; timetable.upcoming_hours = 72; renderNow(); renderPicks(); }).catch(err => { if (!timetable) $("next").innerHTML = `<li class="empty">${esc(errorCopy(err))}</li>`; }),
+      api("deadlines").then(d => { deadlines = d; renderNow(); }).catch(err => { if (!deadlines) $("due").innerHTML = `<li class="empty">${esc(errorCopy(err))}</li>`; }),
+      ...MODULES.map(m => loadModule(m).catch(() => {})),
+    ];
+    await Promise.all(jobs);
+    const ok = Object.keys(plans).length;
+    setConn(ok ? "ok" : "bad", ok ? `Live from NOW · ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : "Could not read NOW; see the message in the module panel.");
+  }
+
+  async function onStatusChange(ev) {
+    const sel = ev.target; const ou = +sel.dataset.ou; const unit = sel.dataset.unit; const status = sel.value;
+    sel.disabled = true;
+    try {
+      await api("log", { method: "POST", headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify({ ou, unit, status, note: "" }) });
+      toast(`${STATUS_LABEL[status]} · ${unit}`);
+      const p = plans[ou]; if (p) { const u = p.units.find(x => x.unit === unit); if (u) u.status = status; p.progress.done = p.units.filter(x => !x.admin && x.status === "done").length; }
+      renderTabs(); renderPicks(); renderModule();
+    } catch (err) {
+      sel.disabled = false;
+      showModuleMsg(errorCopy(err));
+      renderModule();
+    }
+  }
+  function showModuleMsg(text) { const el = $("module-msg"); el.textContent = text; el.className = "msg"; el.hidden = !text; }
+
+  async function start() {
+    renderTabs(); renderModule(); renderNow();
+    await loadAll();
+    setInterval(loadAll, 10 * 60 * 1000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) loadAll(); });
+  }
+  start();
+})();
+</script>
+</body>
+</html>

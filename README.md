@@ -40,6 +40,17 @@ Claude (phone / desktop)  ──MCP──▶  ntu-now-mcp  ──your session─
 | `now_browse`, `now_click`, `now_screenshot`, `now_browser_page` | a persistent logged-in browser on the server: JavaScript-rendered pages exactly as you see them — including what NOW embeds in frames (external tools such as the Timetable) — link maps, tables, screenshots Claude can look at |
 | `now_status`, `now_login_*` | session health; sign back in from your phone (MFA approval in Authenticator) |
 
+## The Study Board
+
+The connector also serves a small web app at `https://<host>/<NOW_HTTP_SECRET>/board`
+(the address is printed as `BOARD_URL` by the setup script): pick a module, see
+its weeks in order with that week's sessions, the files on NOW and your status,
+mark weeks done / in progress / revisit, and open a Claude chat with the right
+prompt for any week. It talks to the same data the tools use (`get_module_plan`,
+`get_timetable`, `get_deadlines`, `log_study`) through a JSON API on the same
+secret path, so it works in any browser, phone included, with no sign-in beyond
+knowing the address. Treat the address like the connector URL.
+
 ## How sign-in works
 
 NOW hands sign-in to NTU's ADFS (`fs.ntu.ac.uk`), which asks for username,

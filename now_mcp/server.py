@@ -22,6 +22,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import Image, MCPServer
@@ -428,16 +429,12 @@ async def download_file(
 
 # ----------------------------------------------------------------- timetable
 
-@server.tool(annotations=READ_ONLY)
-@guarded
-async def get_timetable(
-    weeks_ahead: Annotated[int, Field(description="How many weeks beyond the current one to return (0-12).")] = 1,
-    hours_ahead: Annotated[int, Field(description="Window for the 'upcoming' list, in hours.")] = 48,
-    refresh: Annotated[bool, Field(description="Re-fetch even if a copy from the last 12 hours is cached.")] = False,
-    ical_url: Annotated[str | None, Field(description="The timetable's 'Subscribe to iCal' link, the first time; it is remembered afterwards.")] = None,
-) -> Any:
-    """The student's teaching timetable: every session (day, date, time, room, lecturer, type, module, group) for this week and the next ones, plus 'upcoming' (what is on in the next hours_ahead). Reads the personal iCal feed when one is known (whole year, no sign-in), otherwise NOW's Timetable tool through the browser. Cached for 12 hours."""
+async def timetable_data(weeks_ahead: int = 1, hours_ahead: int = 48, refresh: bool = False, ical_url: str | None = None) -> Any:
+    """Shared by the get_timetable tool and the board's API."""
     import json as _json
+    from datetime import datetime as _dt
+
+    from .timetable import sessions_to_weeks
 
     weeks_ahead = max(0, min(12, weeks_ahead))
     cached = svc.cached_timetable(max_age_hours=10**6) or {}
@@ -445,6 +442,7 @@ async def get_timetable(
     data = None if (refresh or ical_url) else svc.cached_timetable()
     if data is not None and (len(data.get("weeks") or []) < weeks_ahead + 1 and not data.get("all_sessions")):
         data = None
+    feed_error = None
     if data is None and feed:
         try:
             await svc.fetch_ics(feed)
@@ -452,10 +450,6 @@ async def get_timetable(
         except Exception as exc:  # noqa: BLE001
             feed_error = f"{exc.__class__.__name__}: {str(exc)[:200]}"
             data = None
-        else:
-            feed_error = None
-    else:
-        feed_error = None
     if data is None:
         raw = await browser.timetable(path=os.environ.get("NOW_TIMETABLE_PATH") or None, weeks_ahead=weeks_ahead)
         if "error" in raw:
@@ -471,14 +465,24 @@ async def get_timetable(
                 data["ical"] = {"error": f"{exc.__class__.__name__}: {str(exc)[:160]}"}
                 svc._timetable_cache.write_text(_json.dumps(data, indent=1))
     elif data.get("all_sessions"):
-        from datetime import datetime as _dt
-        from now_mcp.timetable import sessions_to_weeks
         data["weeks"] = sessions_to_weeks(data["all_sessions"], _dt.now(cfg.tz).date(), weeks_ahead + 1)
     view = svc.timetable_view(data, hours_ahead=hours_ahead)
     if feed_error:
         view["ical_error"] = feed_error
     view.pop("all_sessions", None)
     return view
+
+
+@server.tool(annotations=READ_ONLY)
+@guarded
+async def get_timetable(
+    weeks_ahead: Annotated[int, Field(description="How many weeks beyond the current one to return (0-12).")] = 1,
+    hours_ahead: Annotated[int, Field(description="Window for the 'upcoming' list, in hours.")] = 48,
+    refresh: Annotated[bool, Field(description="Re-fetch even if a copy from the last 12 hours is cached.")] = False,
+    ical_url: Annotated[str | None, Field(description="The timetable's 'Subscribe to iCal' link, the first time; it is remembered afterwards.")] = None,
+) -> Any:
+    """The student's teaching timetable: every session (day, date, time, room, lecturer, type, module, group) for this week and the next ones, plus 'upcoming' (what is on in the next hours_ahead). Reads the personal iCal feed when one is known (whole year, no sign-in), otherwise NOW's Timetable tool through the browser. Cached for 12 hours."""
+    return await timetable_data(weeks_ahead=weeks_ahead, hours_ahead=hours_ahead, refresh=refresh, ical_url=ical_url)
 
 
 # ---------------------------------------------------------------- everything
@@ -596,12 +600,15 @@ async def run_stdio() -> None:
         await client.aclose()
 
 
-async def run_http() -> None:
+BOARD_HTML = (Path(__file__).parent / "board.html").read_text(encoding="utf-8") if (Path(__file__).parent / "board.html").is_file() else ""
+
+
+def build_http_app():
+    """The Streamable-HTTP MCP app plus /healthz and the Study Board (page + JSON API) on the secret path."""
     import contextlib
 
-    import uvicorn
     from mcp.server.transport_security import TransportSecuritySettings
-    from starlette.responses import JSONResponse
+    from starlette.responses import HTMLResponse, JSONResponse
     from starlette.routing import Route
 
     if not cfg.http_secret or cfg.http_secret == "change-me":
@@ -618,11 +625,74 @@ async def run_http() -> None:
 
     path = f"/{cfg.http_secret}/mcp"
     app = server.streamable_http_app(streamable_http_path=path, stateless_http=True, transport_security=security, host=cfg.http_host)
+    base = f"/{cfg.http_secret}"
 
     async def healthz(_request):  # noqa: ANN001
         return JSONResponse({"ok": True, "version": __version__, "saved_session": state_exists(cfg)})
 
-    app.router.routes.insert(0, Route("/healthz", healthz))
+    def api_error(exc: Exception) -> JSONResponse:
+        if isinstance(exc, NeedsLogin):
+            return JSONResponse({"error": "needs_login", "message": str(exc)}, status_code=503)
+        if isinstance(exc, NowApiError):
+            return JSONResponse({"error": "api_error", "status": exc.status, "message": exc.detail}, status_code=502)
+        if isinstance(exc, ValueError):
+            return JSONResponse({"error": "bad_request", "message": str(exc)}, status_code=400)
+        log.exception("board api failure")
+        return JSONResponse({"error": exc.__class__.__name__, "message": str(exc)[:300]}, status_code=500)
+
+    async def board(_request):  # noqa: ANN001
+        if not BOARD_HTML:
+            return HTMLResponse("<p>board.html is missing from this build.</p>", status_code=404)
+        return HTMLResponse(BOARD_HTML, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex"})
+
+    async def api_plan(request):  # noqa: ANN001
+        try:
+            return JSONResponse(await svc.module_plan(int(request.path_params["ou"]), refresh=request.query_params.get("refresh") == "1"))
+        except Exception as exc:  # noqa: BLE001
+            return api_error(exc)
+
+    async def api_timetable(request):  # noqa: ANN001
+        try:
+            hours = max(1, min(24 * 14, int(request.query_params.get("hours", "72"))))
+            weeks = max(0, min(12, int(request.query_params.get("weeks", "1"))))
+            return JSONResponse(await timetable_data(weeks_ahead=weeks, hours_ahead=hours))
+        except Exception as exc:  # noqa: BLE001
+            return api_error(exc)
+
+    async def api_deadlines(request):  # noqa: ANN001
+        try:
+            ahead = max(1, min(365, int(request.query_params.get("days_ahead", "60"))))
+            back = max(0, min(90, int(request.query_params.get("days_back", "7"))))
+            return JSONResponse(await svc.deadlines(days_back=back, days_ahead=ahead))
+        except Exception as exc:  # noqa: BLE001
+            return api_error(exc)
+
+    async def api_log(request):  # noqa: ANN001
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("JSON object expected")
+            return JSONResponse(await svc.log_study(int(body.get("ou", 0)), str(body.get("unit", "")), str(body.get("status", "")), note=str(body.get("note", "") or "")))
+        except Exception as exc:  # noqa: BLE001
+            return api_error(exc)
+
+    async def api_study_log(request):  # noqa: ANN001
+        try:
+            ou = request.query_params.get("ou")
+            return JSONResponse(svc.study_log(int(ou) if ou else None))
+        except Exception as exc:  # noqa: BLE001
+            return api_error(exc)
+
+    for route in reversed([
+        Route("/healthz", healthz),
+        Route(f"{base}/board", board),
+        Route(f"{base}/api/plan/{{ou:int}}", api_plan),
+        Route(f"{base}/api/timetable", api_timetable),
+        Route(f"{base}/api/deadlines", api_deadlines),
+        Route(f"{base}/api/log", api_log, methods=["POST"]),
+        Route(f"{base}/api/study-log", api_study_log),
+    ]):
+        app.router.routes.insert(0, route)
 
     inner_lifespan = app.router.lifespan_context
 
@@ -638,8 +708,14 @@ async def run_http() -> None:
             await client.aclose()
 
     app.router.lifespan_context = lifespan
+    log.info("MCP endpoint: http://%s:%s%s  board: %s/board", cfg.http_host, cfg.http_port, path, base)
+    return app
 
-    log.info("MCP endpoint: http://%s:%s%s", cfg.http_host, cfg.http_port, path)
+
+async def run_http() -> None:
+    import uvicorn
+
+    app = build_http_app()
     config = uvicorn.Config(app, host=cfg.http_host, port=cfg.http_port, log_level="info", proxy_headers=True, forwarded_allow_ips="*", timeout_graceful_shutdown=3)
     await uvicorn.Server(config).serve()
 
