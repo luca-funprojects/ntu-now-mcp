@@ -6,6 +6,8 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from now_mcp.config import Config
 from now_mcp.service import NowService
 from now_mcp.study import (
@@ -214,3 +216,56 @@ def test_index_survives_concurrent_downloads_and_adopts_orphans(tmp_path: Path, 
     assert before == after
     index = json.loads((svc.cfg.data_dir / "_index.json").read_text())
     assert index["1:50"]["adopted"] is True and "1:50:lecture04-Efficient.pdf" in index
+
+
+def test_study_log_and_module_plan(tmp_path: Path):
+    """log_study is the shared progress record; module_plan joins units, files, timetable and status."""
+    cfg = Config(state_dir=tmp_path / "s", data_dir=tmp_path / "d")
+    cfg.state_dir.mkdir(); cfg.data_dir.mkdir()
+    svc = NowService(cfg, client=None)
+    svc._modules = {
+        1174484: {"ou": 1174484, "code": "SOFT30161_20348_SEM-202627-01", "name": "ASE", "is_active": True, "can_access": True, "pinned": False},
+        1179267: {"ou": 1179267, "code": "COMP30231_20342_SEM-202627-01", "name": "SCCC", "is_active": True, "can_access": True, "pinned": False},
+    }
+    svc._modules_at = 10**12
+    # Downloaded files: ASE labels units by NTU week, SCCC by teaching week.
+    index = {}
+    for i, e in enumerate(ASE):
+        p = cfg.data_dir / f"ase{i}{Path(e['path']).suffix}"; p.write_text("x")
+        index[f"1174484:{i}"] = {**e, "ou": 1174484, "path": str(p)}
+    for i, e in enumerate(SCCC):
+        p = cfg.data_dir / f"sccc{i}{Path(e['path']).suffix}"; p.write_text("x")
+        index[f"1179267:{i}"] = {**e, "ou": 1179267, "path": str(p)}
+    (cfg.data_dir / "_index.json").write_text(json.dumps(index))
+    (cfg.data_dir / "_timetable.json").write_text(json.dumps({
+        "fetched_at": "2026-10-12T17:00:00+00:00", "source": "ical", "weeks": [],
+        "all_sessions": [
+            {"day": "Tuesday", "date": "2026-10-13", "start": "13:00", "end": "14:00", "room": "PAV121", "type": "Subject lecture", "lecturer": "Neil Sculthorpe", "module_code": "SOFT30161", "group": ""},
+            {"day": "Tuesday", "date": "2026-10-13", "start": "18:00", "end": "19:00", "room": "ISC030", "type": "Practical / Lab", "lecturer": "Neil Sculthorpe", "module_code": "SOFT30161", "group": "SE_1"},
+            {"day": "Tuesday", "date": "2026-10-06", "start": "10:00", "end": "11:00", "room": "CTLLT3", "type": "Subject lecture", "lecturer": "Ismahane Cheheb", "module_code": "COMP30231", "group": ""},
+        ],
+    }))
+
+    plan = asyncio.run(svc.module_plan(1174484))
+    assert plan["numbering"] == "ntu" and plan["timetable_available"]
+    w12 = next(u for u in plan["units"] if u["week"] == 12)
+    assert (w12["ntu_week"], w12["start"], w12["end"]) == (12, "2026-10-12", "2026-10-18")
+    assert [s["start"] for s in w12["sessions"]] == ["13:00", "18:00"]           # that week's ASE sessions only
+    assert [f["kind"] for f in w12["files"]] == ["slides", "lecture", "notes", "lab"]
+    assert w12["status"] == "not_started" and plan["progress"] == {"done": 0, "total": 2}
+    assert next(u for u in plan["units"] if u["unit"] == "Assessment")["admin"] is True
+
+    sccc = asyncio.run(svc.module_plan(1179267))
+    assert sccc["numbering"] == "teaching"
+    w3 = next(u for u in sccc["units"] if u["week"] == 3)
+    assert (w3["ntu_week"], w3["start"]) == (11, "2026-10-05") and [s["room"] for s in w3["sessions"]] == ["CTLLT3"]
+
+    r = asyncio.run(svc.log_study(1174484, "Week 12: Sequential Data Structures", "In progress", note="did vector/list"))
+    assert r["logged"]["status"] == "in_progress" and r["logged"]["week"] == 12
+    asyncio.run(svc.log_study(1174484, "Week 12: Sequential Data Structures", "done"))
+    log = svc.study_log(1174484)
+    assert log["count"] == 2 and log["latest"]["1174484:Week 12: Sequential Data Structures"]["status"] == "done"
+    plan = asyncio.run(svc.module_plan(1174484))
+    assert next(u for u in plan["units"] if u["week"] == 12)["status"] == "done" and plan["progress"]["done"] == 1
+    with pytest.raises(ValueError):
+        asyncio.run(svc.log_study(1174484, "Week 12: Sequential Data Structures", "finished"))

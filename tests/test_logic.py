@@ -167,7 +167,7 @@ def test_extract_text_pdf_docx_pptx(tmp_path: Path):
     assert text == "" and err
 
 
-def test_new_content_window_and_seen(tmp_path: Path):
+def test_new_content_window_and_seen(tmp_path: Path, monkeypatch):
     """new_content: window filter, seen-set and mark_seen, using a fake client."""
     import asyncio
     from now_mcp.config import Config
@@ -194,7 +194,7 @@ def test_new_content_window_and_seen(tmp_path: Path):
     svc._modules_at = 10**12
 
     import now_mcp.service as S
-    S.utcnow = lambda: NOW  # freeze time for the window
+    monkeypatch.setattr(S, "utcnow", lambda: NOW)  # freeze time for the window
     r1 = asyncio.run(svc.new_content(hours=72, mark_seen=True))
     assert [t["title"] for t in r1["topics"]] == ["New slides"]
     assert r1["counts"] == {"topics": 1, "announcements": 1, "assignments": 1}

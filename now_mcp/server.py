@@ -333,6 +333,40 @@ async def get_study_pack(
     return await svc.study_pack(ou, query=query, week=week, max_chars=max(5000, min(250000, max_chars)), refresh=refresh)
 
 
+# ------------------------------------------------------------ study board
+
+LOG = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
+
+
+@server.tool(annotations=READ_ONLY)
+@guarded
+async def get_module_plan(
+    ou: OU,
+    refresh: Annotated[bool, Field(description="Check NOW for new files first.")] = False,
+) -> Any:
+    """A module's units (weeks) in order, each with its dates, the files on NOW (title, kind), that week's timetable sessions for the module, and the student's study status — what a study board or planner needs in one call."""
+    return await svc.module_plan(ou, refresh=refresh)
+
+
+@server.tool(annotations=READ_ONLY)
+@guarded
+async def get_study_log(ou: OU_OPT = None) -> Any:
+    """What the student has worked through: every logged study session, newest first, and the latest status per unit."""
+    return svc.study_log(ou)
+
+
+@server.tool(annotations=LOG)
+@guarded
+async def log_study(
+    ou: OU,
+    unit: Annotated[str, Field(description="The unit (folder) name as list_units/get_module_plan shows it, e.g. 'Week 12: Sequential Data Structures'.")],
+    status: Annotated[str, Field(description="not_started, in_progress, done or revisit.")],
+    note: Annotated[str, Field(description="A few words: what was covered, what was hard, what to revisit.")] = "",
+) -> Any:
+    """Record the student's progress on one unit (kept on the server, never on NOW). Both the Study Board page and the study skill write here, so a new chat sees what has been done."""
+    return await svc.log_study(ou, unit, status, note=note)
+
+
 # -------------------------------------------------------------- people/groups
 
 @server.tool(annotations=READ_ONLY)

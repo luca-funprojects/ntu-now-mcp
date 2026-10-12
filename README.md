@@ -35,6 +35,7 @@ Claude (phone / desktop)  ──MCP──▶  ntu-now-mcp  ──your session─
 | `list_new_content`, `download_file` | what appeared or changed since the last check (for the scheduled watcher); fetch any NOW-hosted file such as slides linked from a page |
 | `sync_all` | pull everything into `data/snapshot.json` and download all new files |
 | `now_api_get`, `now_page_text` | escape hatches: any Brightspace API GET, any NOW page as text |
+| `get_module_plan`, `get_study_log`, `log_study` | a module's weeks in order with dates, files, that week's sessions and the student's status; the shared study log (the one thing the connector writes — to its own disk, never to NOW) |
 | `get_timetable` | the teaching timetable from NOW's Timetable tool: every session with day, time, room, lecturer, type, module and group for this week and the next, plus what's on in the next 48 hours; cached 12 h |
 | `now_browse`, `now_click`, `now_screenshot`, `now_browser_page` | a persistent logged-in browser on the server: JavaScript-rendered pages exactly as you see them — including what NOW embeds in frames (external tools such as the Timetable) — link maps, tables, screenshots Claude can look at |
 | `now_status`, `now_login_*` | session health; sign back in from your phone (MFA approval in Authenticator) |
@@ -179,8 +180,9 @@ if the option isn't there.
 - Keep the VPS boring: firewall everything but 22/80/443, enable automatic
   updates, use SSH keys. Delete the server and change your NTU password if
   it is ever compromised.
-- Everything is GET. The connector cannot submit, post, or change anything.
-  The browser tools navigate and click but never type into forms.
+- Everything on NOW is GET. The connector cannot submit, post, or change anything
+  there; the browser tools navigate and click but never type into forms. The one
+  write, `log_study`, records study progress in the connector's own `data/` folder.
 
 ## Day-to-day
 

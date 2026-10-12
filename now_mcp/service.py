@@ -19,8 +19,8 @@ from urllib.parse import unquote
 from .client import NowApiError, NowClient
 from .config import Config
 from .extract import TextCache, snippets
-from .study import ADMIN_UNITS, assemble_pack, classify_kind, extract_file_links, pick_unit, unit_of, unit_week, units_summary
-from .timetable import ics_events_to_sessions, parse_ics_full, parse_timetable_table, parse_week_header, sessions_to_weeks, upcoming
+from .study import ADMIN_UNITS, KIND_ORDER, assemble_pack, classify_kind, display_title, extract_file_links, pick_unit, unit_of, unit_week, units_summary
+from .timetable import NTU_WEEK_OFFSET, TEACHING_WEEK1_MONDAY, ics_events_to_sessions, ntu_week_of, parse_ics_full, parse_timetable_table, parse_week_header, sessions_to_weeks, upcoming
 from .util import clip, days_until, fmt_local, norm, parse_iso, safe_name, text_of, utcnow, window
 
 DOWNLOADABLE_TYPES = {"File", "ContentService"}
@@ -969,6 +969,130 @@ class NowService:
         dest.write_bytes(data)
         text, err = self.text_cache.get(dest)
         return {"path": str(dest), "size": len(data), "content_type": ctype, "text_chars": len(text), "text_error": err}
+
+    # -- study log and module plans (what the Study Board shows) ------------------------
+
+    STUDY_STATUSES = ("not_started", "in_progress", "done", "revisit")
+
+    @property
+    def _study_log_file(self) -> Path:
+        return self.cfg.data_dir / "_study_log.json"
+
+    def _load_study_log(self) -> list[dict[str, Any]]:
+        p = self._study_log_file
+        if not p.is_file():
+            return []
+        try:
+            data = json.loads(p.read_text())
+        except ValueError:
+            return []
+        return data if isinstance(data, list) else []
+
+    def study_log(self, ou: int | None = None, limit: int = 200) -> dict[str, Any]:
+        """Every logged study session (newest first) and the latest status per unit."""
+        entries = [e for e in self._load_study_log() if ou is None or e.get("ou") == ou]
+        # Newest first; insertion order breaks ties between entries written in the same second.
+        entries = [e for _, e in sorted(enumerate(entries), key=lambda ie: (ie[1].get("ts") or "", ie[0]), reverse=True)]
+        latest: dict[str, dict[str, Any]] = {}
+        for e in entries:
+            latest.setdefault(f"{e.get('ou')}:{e.get('unit')}", e)
+        return {"entries": entries[:limit], "latest": latest, "count": len(entries)}
+
+    async def log_study(self, ou: int, unit: str, status: str, note: str = "", week: int | None = None) -> dict[str, Any]:
+        """Record progress on one unit of a module (this is the Study Board's and the study skill's shared log)."""
+        status = (status or "").strip().lower().replace(" ", "_").replace("-", "_")
+        if status not in self.STUDY_STATUSES:
+            raise ValueError(f"status must be one of {', '.join(self.STUDY_STATUSES)}")
+        unit = (unit or "").strip()
+        if not unit:
+            raise ValueError("unit is required (a folder name as list_units shows it)")
+        mod = await self.module(ou)
+        entry = {
+            "ts": utcnow().isoformat(),
+            "ou": ou,
+            "module_code": mod.get("code"),
+            "unit": unit,
+            "week": week if week is not None else unit_week(unit),
+            "status": status,
+            "note": (note or "").strip()[:500],
+        }
+        async with self._index_lock:
+            log = self._load_study_log()
+            log.append(entry)
+            tmp = self._study_log_file.with_name("_study_log.json.tmp")
+            tmp.write_text(json.dumps(log, indent=1))
+            os.replace(tmp, self._study_log_file)
+        return {"logged": entry, "entries_for_unit": sum(1 for e in log if e.get("ou") == ou and e.get("unit") == unit)}
+
+    async def module_plan(self, ou: int, refresh: bool = False) -> dict[str, Any]:
+        """One module's units in order, each with its dates, files, timetable sessions and study status."""
+        mod = await self.module(ou)
+        refreshed = None
+        if refresh:
+            try:
+                rep = await self.download_content(ou)
+                refreshed = {"new_files": len(rep["saved"]), "linked_files": len(rep["linked_files"])}
+            except Exception as exc:  # noqa: BLE001
+                refreshed = {"error": f"{exc.__class__.__name__}: {str(exc)[:160]}"}
+        entries = self._module_entries(ou)
+        by_unit: dict[str, list[dict[str, Any]]] = {}
+        for e in entries:
+            by_unit.setdefault(unit_of(e), []).append(e)
+        summary = units_summary(entries)
+        labelled = [u["week"] for u in summary if u["week"]]
+        ntu_numbering = bool(labelled) and max(labelled) > 8
+        tt = self.cached_timetable(max_age_hours=10**6) or {}
+        sessions = tt.get("all_sessions") or [s for w in tt.get("weeks") or [] for s in w.get("sessions") or []]
+        code_prefix = (mod.get("code") or "").split("_")[0]
+        latest = self.study_log(ou)["latest"]
+        today = datetime.now(self.cfg.tz).date()
+        units = []
+        for u in summary:
+            week = u["week"]
+            ntu_week = (week if ntu_numbering else week + NTU_WEEK_OFFSET - 1) if week else None
+            monday = TEACHING_WEEK1_MONDAY + timedelta(days=7 * (ntu_week - NTU_WEEK_OFFSET)) if ntu_week else None
+            sunday = monday + timedelta(days=6) if monday else None
+            unit_sessions = []
+            if monday and code_prefix:
+                unit_sessions = [
+                    {k: s.get(k) for k in ("day", "date", "start", "end", "room", "type", "lecturer", "group")}
+                    for s in sessions
+                    if s.get("module_code") == code_prefix and s.get("date") and monday.isoformat() <= s["date"] <= sunday.isoformat()
+                ]
+            files = sorted(
+                ({"title": display_title(e), "kind": classify_kind(e), "path": e["path"]} for e in by_unit.get(u["unit"], [])),
+                key=lambda f: (KIND_ORDER.get(f["kind"], 9), f["title"].lower()),
+            )
+            st = latest.get(f"{ou}:{u['unit']}")
+            units.append(
+                {
+                    "unit": u["unit"],
+                    "week": week,
+                    "ntu_week": ntu_week,
+                    "start": monday.isoformat() if monday else None,
+                    "end": sunday.isoformat() if sunday else None,
+                    "is_current_week": bool(monday and monday <= today <= sunday),
+                    "is_past": bool(sunday and sunday < today),
+                    "admin": u["unit"].lower() in ADMIN_UNITS,
+                    "files": files,
+                    "sessions": unit_sessions,
+                    "status": st["status"] if st else "not_started",
+                    "status_note": st.get("note") if st else "",
+                    "status_at": st.get("ts") if st else None,
+                }
+            )
+        return {
+            "ou": ou,
+            "module_code": mod.get("code"),
+            "module_name": mod.get("name"),
+            "today": today.isoformat(),
+            "ntu_week_now": ntu_week_of(today),
+            "numbering": "ntu" if ntu_numbering else "teaching",
+            "timetable_available": bool(sessions),
+            "refreshed": refreshed,
+            "units": units,
+            "progress": {"done": sum(1 for x in units if x["status"] == "done" and not x["admin"]), "total": sum(1 for x in units if not x["admin"])},
+        }
 
     # -- timetable --------------------------------------------------------------------
 
