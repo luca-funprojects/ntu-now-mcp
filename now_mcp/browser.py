@@ -116,31 +116,48 @@ class BrowserSession:
         except Exception:  # noqa: BLE001 - busy pages never go idle; fine
             pass
 
-    async def _text(self, max_chars: int) -> str:
+    async def _text(self, max_chars: int, root=None) -> str:
+        root = root or self._page
         try:
-            text = await self._page.inner_text("body", timeout=5000)
+            text = await root.inner_text("body", timeout=5000)
         except Exception:  # noqa: BLE001
             return ""
         text = re.sub(r"[ \t]+", " ", text)
         text = re.sub(r"\n\s*\n+", "\n", text).strip()
         return text[:max_chars]
 
-    async def _links(self, limit: int = 150) -> list[dict[str, str]]:
+    _LINKS_JS = """() => {
+        const out = [];
+        const walk = (root) => {
+            for (const a of root.querySelectorAll('a[href]')) {
+                const text = (a.innerText || a.textContent || a.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+                if (text && !a.href.startsWith('javascript:')) out.push({text, href: a.href});
+            }
+            for (const el of root.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+        };
+        walk(document);
+        return out;
+    }"""
+
+    _TABLES_JS = """(maxRows) => {
+        const out = [];
+        for (const t of document.querySelectorAll('table')) {
+            const rows = [];
+            for (const tr of t.querySelectorAll('tr')) {
+                const cells = Array.from(tr.querySelectorAll('th,td')).map(c => (c.innerText || c.textContent || '').trim().replace(/\\s+/g, ' '));
+                if (cells.some(c => c)) rows.push(cells);
+                if (rows.length >= maxRows) break;
+            }
+            if (rows.length) out.push(rows);
+            if (out.length >= 25) break;
+        }
+        return out;
+    }"""
+
+    async def _links(self, root=None, limit: int = 150) -> list[dict[str, str]]:
+        root = root or self._page
         try:
-            raw = await self._page.evaluate(
-                """() => {
-                    const out = [];
-                    const walk = (root) => {
-                        for (const a of root.querySelectorAll('a[href]')) {
-                            const text = (a.innerText || a.textContent || a.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
-                            if (text && !a.href.startsWith('javascript:')) out.push({text, href: a.href});
-                        }
-                        for (const el of root.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
-                    };
-                    walk(document);
-                    return out;
-                }"""
-            )
+            raw = await root.evaluate(self._LINKS_JS)
         except Exception:  # noqa: BLE001
             return []
         seen, out = set(), []
@@ -154,6 +171,18 @@ class BrowserSession:
                 break
         return out
 
+    async def _tables(self, root=None, max_rows: int = 120) -> list[list[list[str]]]:
+        """Every <table> as rows of cell text (frames included when ``root`` is a frame)."""
+        root = root or self._page
+        try:
+            return await root.evaluate(self._TABLES_JS, max_rows)
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _frames(self):
+        """Embedded frames with real content (NOW's external tools, such as the Timetable, live in one)."""
+        return [f for f in self._page.frames if f != self._page.main_frame and f.url not in ("", "about:blank")]
+
     async def _page_summary(self, max_chars: int, with_links: bool) -> dict[str, Any]:
         info: dict[str, Any] = {
             "url": self._page.url,
@@ -162,6 +191,27 @@ class BrowserSession:
         }
         if with_links:
             info["links"] = await self._links()
+        tables = await self._tables()
+        if tables:
+            info["tables"] = tables
+        frames = []
+        for fr in self._frames():
+            text = await self._text(max_chars, fr)
+            if not text:
+                continue
+            entry: dict[str, Any] = {"url": fr.url, "text": text}
+            if with_links:
+                entry["links"] = await self._links(fr)
+            ftables = await self._tables(fr)
+            if ftables:
+                entry["tables"] = ftables
+            frames.append(entry)
+        if frames:
+            info["frames"] = frames
+            if len(info["text"]) < 400:
+                main = info["text"]
+                info["text"] = max(frames, key=lambda f: len(f["text"]))["text"]
+                info["note"] = f"The page's own text was only the NOW shell ({main[:60]!r}...); 'text' shows the embedded frame. All frames are under 'frames'."
         return info
 
     # -- tools ------------------------------------------------------------------
@@ -189,26 +239,34 @@ class BrowserSession:
             await self._ensure()
             self.last_used = time.time()
             page = self._page
-            candidates = [
-                page.get_by_role("link", name=target, exact=False),
-                page.get_by_role("button", name=target, exact=False),
-                page.get_by_text(target, exact=False),
-            ]
+            roots = [page] + self._frames()
             clicked = False
-            for loc in candidates:
-                try:
-                    if await loc.count():
-                        await loc.first.click(timeout=timeout_ms)
+            for root in roots:
+                candidates = [
+                    root.get_by_role("link", name=target, exact=False),
+                    root.get_by_role("button", name=target, exact=False),
+                    root.get_by_text(target, exact=False),
+                ]
+                for loc in candidates:
+                    try:
+                        if await loc.count():
+                            await loc.first.click(timeout=timeout_ms)
+                            clicked = True
+                            break
+                    except Exception:  # noqa: BLE001
+                        continue
+                if clicked:
+                    break
+            if not clicked:
+                for root in roots:
+                    try:
+                        await root.locator(target).first.click(timeout=timeout_ms)
                         clicked = True
                         break
-                except Exception:  # noqa: BLE001
-                    continue
+                    except Exception:  # noqa: BLE001
+                        continue
             if not clicked:
-                try:
-                    await page.locator(target).first.click(timeout=timeout_ms)
-                    clicked = True
-                except Exception as exc:  # noqa: BLE001
-                    return {"error": f"Nothing matched '{target}' as text or selector ({exc.__class__.__name__}).", "url": page.url}
+                return {"error": f"Nothing matched '{target}' as link/button text, visible text or selector (page and embedded frames searched).", "url": page.url}
             await self._settle(timeout_ms)
             if self._on_login_page():
                 raise NeedsLogin("That click led to the sign-in page; the session has expired.")
@@ -228,6 +286,75 @@ class BrowserSession:
         async with self._lock:
             await self._ensure()
             return await self._page_summary(max_chars, True)
+
+    async def timetable(self, path: str | None, weeks_ahead: int = 1, timeout_ms: int = 30000) -> dict[str, Any]:
+        """Read the Timetable tool embedded in NOW: this week and ``weeks_ahead`` more, as table rows.
+
+        Returns raw material (week header text, table rows, the iCal link); parsing lives in
+        ``now_mcp.timetable`` so it can be tested without a browser.
+        """
+        from .timetable import WEEK_HEADER_RE
+
+        async with self._lock:
+            await self._ensure()
+            self.last_used = time.time()
+            if not path:
+                # Find the navbar link called "Timetable" from the home page.
+                await self._page.goto(self._url("/d2l/home"), wait_until="domcontentloaded", timeout=timeout_ms)
+                await self._settle(timeout_ms)
+                if self._on_login_page():
+                    raise NeedsLogin("The browser landed on the sign-in page; run the login flow.")
+                for link in await self._links():
+                    if link["text"].strip().lower() == "timetable":
+                        path = link["href"]
+                        break
+                if not path:
+                    return {"error": "No 'Timetable' link found in the NOW navigation bar; pass its path explicitly."}
+            await self._page.goto(self._url(path), wait_until="domcontentloaded", timeout=timeout_ms)
+            await self._settle(timeout_ms)
+            if self._on_login_page():
+                raise NeedsLogin("The browser landed on the sign-in page; run the login flow.")
+
+            async def find_frame():
+                # The tool may sit in a nested frame: prefer the one that holds a table, else the wordiest.
+                best, best_len = None, -1
+                for fr in self._frames():
+                    if await self._tables(fr):
+                        return fr
+                    n = len(await self._text(4000, fr))
+                    if n > best_len:
+                        best, best_len = fr, n
+                return best
+
+            weeks: list[dict[str, Any]] = []
+            ical = None
+            frame = await find_frame()
+            if frame is None:
+                return {"error": "The timetable page has no embedded frame yet; try again in a moment.", "url": self._page.url}
+            for i in range(max(0, weeks_ahead) + 1):
+                if i:
+                    btn = frame.get_by_role("button", name="Next week")
+                    if not await btn.count():
+                        btn = frame.locator("input[value='Next week'], button:has-text('Next week')")
+                    if not await btn.count():
+                        break
+                    await btn.first.click(timeout=timeout_ms)
+                    try:
+                        await frame.wait_for_load_state("networkidle", timeout=timeout_ms)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    frame = await find_frame() or frame
+                text = await self._text(20000, frame)
+                m = WEEK_HEADER_RE.search(text)
+                tables = await self._tables(frame)
+                if ical is None:
+                    for link in await self._links(frame):
+                        if "ical" in link["text"].lower():
+                            ical = link["href"]
+                            break
+                weeks.append({"header": m.group(0) if m else None, "tables": tables, "frame_url": frame.url})
+            await self.save_state()
+            return {"path": path, "weeks": weeks, "ical_url": ical}
 
     async def idle_close(self, idle_seconds: int = 900) -> None:
         """Close the browser if nobody has used it for a while (frees ~200 MB)."""

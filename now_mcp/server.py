@@ -392,6 +392,34 @@ async def download_file(
     return await svc.download_file(url, subdir=subdir)
 
 
+# ----------------------------------------------------------------- timetable
+
+@server.tool(annotations=READ_ONLY)
+@guarded
+async def get_timetable(
+    weeks_ahead: Annotated[int, Field(description="How many weeks beyond the current one to read (0-6).")] = 1,
+    hours_ahead: Annotated[int, Field(description="Window for the 'upcoming' list, in hours.")] = 48,
+    refresh: Annotated[bool, Field(description="Re-read NOW even if a copy from the last 12 hours is cached.")] = False,
+) -> Any:
+    """The student's teaching timetable from NOW's Timetable tool: every session (day, date, time, room, lecturer, type, module, group) for this week and the next ones, plus 'upcoming' (what is on in the next hours_ahead). Cached for 12 hours; refresh=true re-reads."""
+    weeks_ahead = max(0, min(6, weeks_ahead))
+    data = None if refresh else svc.cached_timetable()
+    if data is not None and len(data.get("weeks") or []) < weeks_ahead + 1:
+        data = None
+    if data is None:
+        raw = await browser.timetable(path=os.environ.get("NOW_TIMETABLE_PATH") or None, weeks_ahead=weeks_ahead)
+        if "error" in raw:
+            return raw
+        data = svc.timetable_from_raw(raw)
+        if data.get("ical_url"):
+            try:
+                data["ical"] = await svc.fetch_ics(data["ical_url"])
+            except Exception as exc:  # noqa: BLE001
+                data["ical"] = {"error": f"{exc.__class__.__name__}: {str(exc)[:160]}"}
+            svc._timetable_cache.write_text(__import__("json").dumps(data, indent=1))
+    return svc.timetable_view(data, hours_ahead=hours_ahead)
+
+
 # ---------------------------------------------------------------- everything
 
 @server.tool(annotations=READ_ONLY)

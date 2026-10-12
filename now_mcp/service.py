@@ -20,6 +20,7 @@ from .client import NowApiError, NowClient
 from .config import Config
 from .extract import TextCache, snippets
 from .study import ADMIN_UNITS, assemble_pack, classify_kind, extract_file_links, pick_unit, unit_of, unit_week, units_summary
+from .timetable import parse_ics, parse_timetable_table, parse_week_header, upcoming
 from .util import clip, days_until, fmt_local, norm, parse_iso, safe_name, text_of, utcnow, window
 
 DOWNLOADABLE_TYPES = {"File", "ContentService"}
@@ -968,6 +969,79 @@ class NowService:
         dest.write_bytes(data)
         text, err = self.text_cache.get(dest)
         return {"path": str(dest), "size": len(data), "content_type": ctype, "text_chars": len(text), "text_error": err}
+
+    # -- timetable --------------------------------------------------------------------
+
+    @property
+    def _timetable_cache(self) -> Path:
+        return self.cfg.data_dir / "_timetable.json"
+
+    def timetable_from_raw(self, raw: dict[str, Any]) -> dict[str, Any]:
+        """Shape what the browser read from the Timetable tool and cache it."""
+        weeks = []
+        for w in raw.get("weeks") or []:
+            header = parse_week_header(w.get("header") or "") or {}
+            sessions: list[dict[str, Any]] = []
+            for table in w.get("tables") or []:
+                parsed = parse_timetable_table(table)
+                if parsed:
+                    sessions = parsed
+                    break
+            weeks.append({**header, "sessions": sessions})
+        data = {
+            "fetched_at": utcnow().isoformat(),
+            "source": raw.get("path"),
+            "ical_url": raw.get("ical_url"),
+            "weeks": weeks,
+        }
+        self._timetable_cache.write_text(json.dumps(data, indent=1))
+        return data
+
+    def cached_timetable(self, max_age_hours: float = 12) -> dict[str, Any] | None:
+        p = self._timetable_cache
+        if not p.is_file():
+            return None
+        try:
+            data = json.loads(p.read_text())
+        except ValueError:
+            return None
+        fetched = parse_iso(data.get("fetched_at"))
+        if fetched is None or utcnow() - fetched > timedelta(hours=max_age_hours):
+            return None
+        return data
+
+    async def fetch_ics(self, url: str) -> dict[str, Any]:
+        """Fetch and parse the timetable's iCal feed (only from NTU hosts)."""
+        import httpx
+        from urllib.parse import urlparse
+
+        if url.startswith("webcal://"):
+            url = "https://" + url[len("webcal://"):]
+        host = urlparse(url).hostname or ""
+        if not (host == self.cfg.host or host.endswith(".ntu.ac.uk")):
+            raise ValueError(f"Refusing to fetch a calendar from {host}; only NTU hosts are allowed.")
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as http:
+            r = await http.get(url, headers={"User-Agent": "ntu-now-mcp"})
+        if r.status_code != 200 or "BEGIN:VCALENDAR" not in r.text[:2000]:
+            raise ValueError(f"The iCal link did not return a calendar (HTTP {r.status_code}).")
+        events = parse_ics(r.text)
+        (self.cfg.data_dir / "_timetable.ics").write_text(r.text)
+        return {"url": url, "events": len(events), "first": min((e.get("dtstart", "") for e in events), default=None), "last": max((e.get("dtstart", "") for e in events), default=None)}
+
+    def timetable_view(self, data: dict[str, Any], hours_ahead: int = 48) -> dict[str, Any]:
+        """The cached timetable plus what is coming up, in local time."""
+        now = datetime.now(self.cfg.tz)
+        sessions = [s for w in data.get("weeks") or [] for s in w.get("sessions") or []]
+        return {
+            "fetched_at": fmt_local(data.get("fetched_at"), self.cfg.tz),
+            "today": now.strftime("%A %d %b %Y, %H:%M"),
+            "upcoming": upcoming(sessions, now, hours=hours_ahead),
+            "weeks": data.get("weeks"),
+            "ical_url": data.get("ical_url"),
+            "ical": data.get("ical"),
+            "source": data.get("source"),
+            "note": "Timetables are live documents (NTU's words): rooms and times can change; refresh=true re-reads NOW.",
+        }
 
     # -- everything at once ---------------------------------------------------------
 

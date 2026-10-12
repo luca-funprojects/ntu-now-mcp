@@ -35,7 +35,8 @@ Claude (phone / desktop)  ──MCP──▶  ntu-now-mcp  ──your session─
 | `list_new_content`, `download_file` | what appeared or changed since the last check (for the scheduled watcher); fetch any NOW-hosted file such as slides linked from a page |
 | `sync_all` | pull everything into `data/snapshot.json` and download all new files |
 | `now_api_get`, `now_page_text` | escape hatches: any Brightspace API GET, any NOW page as text |
-| `now_browse`, `now_click`, `now_screenshot`, `now_browser_page` | a persistent logged-in browser on the server: JavaScript-rendered pages exactly as you see them, link maps, screenshots Claude can look at |
+| `get_timetable` | the teaching timetable from NOW's Timetable tool: every session with day, time, room, lecturer, type, module and group for this week and the next, plus what's on in the next 48 hours; cached 12 h |
+| `now_browse`, `now_click`, `now_screenshot`, `now_browser_page` | a persistent logged-in browser on the server: JavaScript-rendered pages exactly as you see them — including what NOW embeds in frames (external tools such as the Timetable) — link maps, tables, screenshots Claude can look at |
 | `now_status`, `now_login_*` | session health; sign back in from your phone (MFA approval in Authenticator) |
 
 ## How sign-in works
@@ -198,6 +199,10 @@ if the option isn't there.
   `read_document`. `list_units(ou)` is the menu. Pages that only link to the
   real slides are followed automatically when content is downloaded, so the
   slides are in the pack too.
+- Timetable: `get_timetable()` reads NOW's Timetable tool (the navbar link, found
+  automatically; override with `NOW_TIMETABLE_PATH`) and caches it in
+  `data/_timetable.json` for 12 hours. If the tool offers a "Subscribe to iCal"
+  link, the feed is fetched too (NTU hosts only) and kept in `data/_timetable.ics`.
 - The download index (`data/_index.json`) is written under a lock and merged,
   so parallel downloads can't lose each other's entries; if it is ever lost,
   the next `download_content` adopts the files already on disk instead of
@@ -227,7 +232,8 @@ python -m now_mcp.server --http --verbose   # Streamable HTTP on NOW_HTTP_HOST:N
 Layout: `config.py` (env), `session.py` (Playwright sign-in state machine +
 cookie export), `client.py` (httpx Brightspace client with silent re-login),
 `service.py` (shaping, downloads, deadline merge), `study.py` (study packs:
-unit matching, reading order, link extraction), `extract.py` (file → text),
+unit matching, reading order, link extraction), `timetable.py` (timetable
+parsing), `browser.py` (persistent browser, frame-aware), `extract.py` (file → text),
 `server.py` (the MCP tools), `login.py` (CLI).
 
 Brightspace API reference: https://docs.valence.desire2learn.com/
