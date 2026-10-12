@@ -11,6 +11,7 @@ from now_mcp.service import NowService
 from now_mcp.study import (
     assemble_pack,
     classify_kind,
+    display_title,
     extract_file_links,
     pick_unit,
     score_entry,
@@ -73,6 +74,12 @@ def test_pick_unit_by_lecture_number_week_number_and_words():
     assert pick_unit(SCCC, "lecture 3", None)[0] == "Week 3: RESTful Services Fundamentals"
     assert pick_unit(ASE, "quantum chromodynamics", None)[0] is None
     assert score_entry(ASE[6], "assessment", None) > 0
+
+
+def test_display_title_names_linked_files_after_their_page():
+    assert display_title(ASE[1]) == "Lecture: Efficient Sequential Data Structures — 14935650_att_lecture04-Efficient_Sequential_Data_Structures.pdf"
+    assert display_title(ASE[0]) == "Lecture: Efficient Sequential Data Structures"
+    assert display_title({"path": "/x/1_att_Coursework 1.pdf", "title": "Coursework 1 specification", "kind": "attachment", "parent_title": "Assessment Brief 1"}) == "Assessment Brief 1 — Coursework 1 specification"
 
 
 def test_units_summary_orders_weeks_first():
@@ -176,6 +183,7 @@ def test_download_follows_links_then_study_pack(tmp_path: Path, monkeypatch):
     assert pack["unit"] == "Week 12: Sequential Data Structures" and pack["week"] == 12
     assert [f["kind"] for f in pack["files"]] == ["slides", "lecture", "lab"]
     assert pack["files"][0]["source"] == "linked file" and "vector vs list" in pack["files"][0]["text"]
+    assert pack["files"][0]["title"] == "Lecture: Efficient Sequential Data Structures — 50_att_lecture04-Efficient.pdf"
     assert "Node* nextNode" in pack["files"][2]["text"]
     assert pack["chars"]["total"] == pack["chars"]["included"]
 

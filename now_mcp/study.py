@@ -61,6 +61,21 @@ def classify_kind(entry: dict[str, Any]) -> str:
     return "page"
 
 
+GENERIC_LINK_TEXT = {"here", "link", "this link", "from this link", "download", "slides", "the slides", "click here", "pdf", "file"}
+
+
+def display_title(entry: dict[str, Any]) -> str:
+    """A readable title: linked files named after the page that linked them, not the link's wording."""
+    title = (entry.get("title") or "").strip()
+    name = Path(entry.get("path") or "").name
+    if entry.get("kind") == "attachment":
+        parent = (entry.get("parent_title") or "").strip()
+        if not title or title.lower() in GENERIC_LINK_TEXT or len(title) < 4:
+            return f"{parent} — {name}" if parent else name
+        return f"{parent} — {title}" if parent and parent.lower() not in title.lower() else title
+    return title or name
+
+
 def _tokens(s: str) -> list[str]:
     return [t for t in TOKEN_RE.findall((s or "").lower()) if t not in STOPWORDS]
 
@@ -122,7 +137,7 @@ def units_summary(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         k = classify_kind(e)
         row["kinds"][k] = row["kinds"].get(k, 0) + 1
         if len(row["titles"]) < 8:
-            row["titles"].append(e.get("title") or Path(e.get("path") or "").name)
+            row["titles"].append(display_title(e))
     rows = list(out.values())
     rows.sort(key=lambda r: (r["week"] is None, r["week"] or 0, r["unit"].lower()))
     return rows
@@ -138,7 +153,7 @@ def assemble_pack(entries: list[dict[str, Any]], texts: dict[str, tuple[str, str
         text, err = texts.get(e["path"], ("", "not extracted"))
         kind = classify_kind(e)
         row: dict[str, Any] = {
-            "title": e.get("title"),
+            "title": display_title(e),
             "kind": kind,
             "path": e["path"],
             "chars": len(text),
@@ -161,7 +176,7 @@ def assemble_pack(entries: list[dict[str, Any]], texts: dict[str, tuple[str, str
             budget = 0
             files.append(row)
         else:
-            later.append({"title": e.get("title"), "kind": kind, "path": e["path"], "chars": len(text)})
+            later.append({"title": display_title(e), "kind": kind, "path": e["path"], "chars": len(text)})
     return {"files": files, "read_separately": later, "total_chars": total, "included_chars": max_chars - budget}
 
 
