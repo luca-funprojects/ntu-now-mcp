@@ -1,0 +1,16 @@
+[Unit]
+Description=NOW connector ops (maintenance over MCP)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ntu-now-mcp
+EnvironmentFile=/opt/ntu-now-mcp/.env
+Environment=NOW_APP_DIR=/opt/ntu-now-mcp
+ExecStart=/opt/ntu-now-ops/.venv/bin/python /opt/ntu-now-mcp/ops/ops_server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

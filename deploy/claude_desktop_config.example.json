@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ntu-now": {
+      "command": "/FULL/PATH/TO/ntu-now-mcp/.venv/bin/python",
+      "args": ["-m", "now_mcp.server"]
+    }
+  }
+}

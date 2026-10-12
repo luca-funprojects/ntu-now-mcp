@@ -1,0 +1,14 @@
+# Secrets and session material -- never commit these
+.env
+state/
+data/
+*.storage.json
+CONNECTOR_URL
+OPS_URL
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/

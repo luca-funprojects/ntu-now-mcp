@@ -1,0 +1,32 @@
+#cloud-config
+# Paste this as the "user data" / "cloud-init" when creating an Ubuntu 24.04 server.
+# Replace the three values in the first lines. The server then builds itself:
+# Docker, firewall, HTTPS, the connector, nightly code updates, OS security updates.
+#
+#   REPO      - the git URL of your copy of ntu-now-mcp (public, or with a token)
+#   HOSTNAME  - the DNS name you pointed at this server (e.g. lucanow.duckdns.org)
+#
+# After it boots (3-5 minutes), copy your NOW session up from the laptop:
+#   scp state/now.storage.json root@HOSTNAME:/opt/ntu-now-mcp/state/
+# then read the two connector URLs:
+#   ssh root@HOSTNAME cat /opt/ntu-now-mcp/CONNECTOR_URL /opt/ntu-now-mcp/OPS_URL
+
+package_update: true
+package_upgrade: true
+packages:
+  - git
+  - unattended-upgrades
+  - ufw
+
+write_files:
+  - path: /root/now-env
+    permissions: "0600"
+    content: |
+      REPO=https://github.com/YOUR-GITHUB-USERNAME/ntu-now-mcp.git
+      HOSTNAME=YOUR-HOSTNAME.duckdns.org
+
+runcmd:
+  - set -e
+  - . /root/now-env
+  - git clone "$REPO" /opt/ntu-now-mcp
+  - cd /opt/ntu-now-mcp && bash deploy/setup-vps.sh "$HOSTNAME"

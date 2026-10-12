@@ -1,0 +1,35 @@
+services:
+  now-mcp:
+    build: .
+    env_file: .env
+    environment:
+      NOW_HTTP_HOST: 0.0.0.0
+      NOW_STATE_DIR: /app/state
+      NOW_DATA_DIR: /app/data
+    volumes:
+      - ./state:/app/state
+      - ./data:/app/data
+    ports:
+      - "127.0.0.1:8765:8765"   # only reachable via Caddy (HTTPS) from outside
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    depends_on: [now-mcp]
+    environment:
+      NOW_PUBLIC_HOST: ${NOW_PUBLIC_HOST}
+      OPS_SECRET: ${OPS_SECRET:-disabled-ops}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets Caddy reach the ops service on the host
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}

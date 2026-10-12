@@ -1,0 +1,19 @@
+# Caddy terminates HTTPS (automatic Let's Encrypt certificate) and routes:
+#   /<OPS_SECRET>/...  -> the ops service on the host (maintenance over MCP)
+#   everything else    -> the NOW connector container
+{$NOW_PUBLIC_HOST} {
+    encode gzip
+
+    @ops path /{$OPS_SECRET}/*
+    handle @ops {
+        reverse_proxy host.docker.internal:8766 {
+            flush_interval -1
+        }
+    }
+
+    handle {
+        reverse_proxy now-mcp:8765 {
+            flush_interval -1
+        }
+    }
+}
