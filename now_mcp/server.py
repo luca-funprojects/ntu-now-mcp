@@ -676,6 +676,30 @@ def build_http_app():
         except Exception as exc:  # noqa: BLE001
             return api_error(exc)
 
+    INLINE_TYPES = {".pdf": "application/pdf", ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".md": "text/plain; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+
+    async def files(request):  # noqa: ANN001
+        """Serve a downloaded file (the deck, the lab sheet) from the data directory."""
+        from starlette.responses import FileResponse, Response
+
+        rel = request.path_params["rel"]
+        try:
+            p = svc._resolve(rel)
+        except ValueError:
+            return JSONResponse({"error": "bad_request", "message": "outside the data directory"}, status_code=400)
+        if not p.is_file() or "_text_cache" in p.parts or p.name in ("_index.json", "_seen.json", "_study_log.json", "_timetable.json", "_timetable.ics", "snapshot.json"):
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        ext = p.suffix.lower()
+        if ext in (".html", ".htm"):
+            # NOW's pages link their images and styles relative to NOW: point them back there (the viewer is signed in).
+            html = p.read_text(errors="replace")
+            if "<base " not in html[:4000].lower():
+                html = html.replace("<head>", f'<head><base href="{cfg.base_url}/">', 1) if "<head>" in html else f'<base href="{cfg.base_url}/">' + html
+            return Response(html, media_type="text/html; charset=utf-8", headers={"Cache-Control": "private, max-age=300"})
+        media = INLINE_TYPES.get(ext)
+        disposition = "inline" if media else "attachment"
+        return FileResponse(str(p), media_type=media, filename=p.name, content_disposition_type=disposition, headers={"Cache-Control": "private, max-age=3600"})
+
     async def api_study_log(request):  # noqa: ANN001
         try:
             ou = request.query_params.get("ou")
@@ -691,6 +715,7 @@ def build_http_app():
         Route(f"{base}/api/deadlines", api_deadlines),
         Route(f"{base}/api/log", api_log, methods=["POST"]),
         Route(f"{base}/api/study-log", api_study_log),
+        Route(f"{base}/files/{{rel:path}}", files),
     ]):
         app.router.routes.insert(0, route)
 

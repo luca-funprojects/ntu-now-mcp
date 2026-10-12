@@ -49,7 +49,11 @@ mark weeks done / in progress / revisit, and open a Claude chat with the right
 prompt for any week. It talks to the same data the tools use (`get_module_plan`,
 `get_timetable`, `get_deadlines`, `log_study`) through a JSON API on the same
 secret path, so it works in any browser, phone included, with no sign-in beyond
-knowing the address. Treat the address like the connector URL.
+knowing the address. Treat the address like the connector URL. Every file on a
+week card links to its page on NOW (you are signed in there), with the server's
+own copy at `/<secret>/files/<path>` as a backup; `get_study_pack` and
+`get_module_plan` return the same `now_url` per file so Claude can link them in
+chat.
 
 ## How sign-in works
 

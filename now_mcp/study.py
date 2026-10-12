@@ -156,6 +156,7 @@ def assemble_pack(entries: list[dict[str, Any]], texts: dict[str, tuple[str, str
             "title": display_title(e),
             "kind": kind,
             "path": e["path"],
+            "now_url": e.get("now_url"),
             "chars": len(text),
             "source": "linked file" if e.get("kind") == "attachment" else "topic",
         }
@@ -176,7 +177,7 @@ def assemble_pack(entries: list[dict[str, Any]], texts: dict[str, tuple[str, str
             budget = 0
             files.append(row)
         else:
-            later.append({"title": display_title(e), "kind": kind, "path": e["path"], "chars": len(text)})
+            later.append({"title": display_title(e), "kind": kind, "path": e["path"], "now_url": e.get("now_url"), "chars": len(text)})
     return {"files": files, "read_separately": later, "total_chars": total, "included_chars": max_chars - budget}
 
 

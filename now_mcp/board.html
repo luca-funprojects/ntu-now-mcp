@@ -126,6 +126,9 @@
   .files .k { font-family: var(--font-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
   .files .t { overflow-wrap: anywhere; }
   .files .t.dim { color: var(--muted); }
+  .files .t a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
+  .files .t a:hover { text-decoration-color: var(--accent); }
+  .files .dl { font-family: var(--font-mono); font-size: 12px; color: var(--accent); text-decoration: none; margin-left: 4px; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); cursor: pointer; text-decoration: none; font-weight: 600; font-size: 14px; }
   .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
@@ -325,7 +328,11 @@
       const cls = ["unit", u.is_current_week ? "current" : "", u.admin ? "admin" : ""].join(" ");
       const wk = u.week ? `<span class="n">W${u.week}</span><span class="d">${fmtRange(u.start, u.end)}</span>` : `<span class="n">—</span>`;
       const sessions = (u.sessions || []).map(s => `<li><span class="when">${esc(s.day.slice(0, 3))} ${esc(s.date.slice(8))}/${esc(s.date.slice(5, 7))} ${esc(s.start)}–${esc(s.end)}</span><span>${esc(s.type || "")} · ${esc(shortRoom(s.room))}${s.lecturer ? ` · ${esc(s.lecturer)}` : ""}</span></li>`).join("");
-      const files = (u.files || []).map(f => `<li><span class="k">${esc(KIND_LABEL[f.kind] || f.kind)}</span><span class="t ${f.kind === "recording" ? "dim" : ""}">${esc(f.title)}</span></li>`).join("");
+      const files = (u.files || []).map(f => {
+        const open = f.now_url ? `<a href="${esc(f.now_url)}" target="_blank" rel="noopener">${esc(f.title)}</a>` : esc(f.title);
+        const copy = f.rel_path ? ` <a class="dl" href="${esc("files/" + f.rel_path.split("/").map(encodeURIComponent).join("/"))}" target="_blank" rel="noopener" title="Open the server's copy">↓</a>` : "";
+        return `<li><span class="k">${esc(KIND_LABEL[f.kind] || f.kind)}</span><span class="t ${f.kind === "recording" ? "dim" : ""}">${open}${copy}</span></li>`;
+      }).join("");
       const sel = `<select class="status-select" id="status-${m.ou}-${i}" data-ou="${m.ou}" data-unit="${esc(u.unit)}" aria-label="Status for ${esc(u.unit)}">${Object.entries(STATUS_LABEL).map(([k, v]) => `<option value="${k}" ${k === u.status ? "selected" : ""}>${v}</option>`).join("")}</select>`;
       const study = u.admin ? "" : `<a class="btn primary" href="${chatLink(m, u)}" target="_blank" rel="noopener">Study with Claude</a><button class="btn" type="button" data-copy="${esc(promptFor(m, u))}">Copy prompt</button>`;
       return `<li class="${cls}">

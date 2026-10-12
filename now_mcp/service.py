@@ -679,8 +679,29 @@ class NowService:
     # -- study packs ----------------------------------------------------------------
 
     def _module_entries(self, ou: int) -> list[dict[str, Any]]:
+        """Downloaded files of a module, each annotated with where it lives on NOW and under the data dir."""
         index = self._load_index()
-        return [v for v in index.values() if v.get("ou") == ou and v.get("path") and Path(v["path"]).is_file()]
+        out = []
+        for key, v in index.items():
+            if v.get("ou") != ou or not v.get("path") or not Path(v["path"]).is_file():
+                continue
+            e = dict(v)
+            e["now_url"] = self._now_link(key, e)
+            try:
+                e["rel_path"] = str(Path(e["path"]).resolve().relative_to(self.cfg.data_dir.resolve()))
+            except ValueError:
+                e["rel_path"] = None
+            out.append(e)
+        return out
+
+    def _now_link(self, key: str, entry: dict[str, Any]) -> str | None:
+        """The item's own page on NOW: a topic's viewer, or a linked file's address."""
+        parts = key.split(":")
+        if entry.get("kind") == "attachment" and entry.get("source_url"):
+            return self.cfg.base_url + entry["source_url"]
+        if len(parts) == 2 and parts[1].isdigit():
+            return f"{self.cfg.base_url}/d2l/le/content/{parts[0]}/viewContent/{parts[1]}/View"
+        return None
 
     async def list_units(self, ou: int, refresh: bool = False) -> dict[str, Any]:
         mod = await self.module(ou)
@@ -727,7 +748,7 @@ class NowService:
         prev_unit = next((u for u in summary if uw is not None and u["week"] == uw - 1), None)
         next_unit = next((u for u in summary if uw is not None and u["week"] == uw + 1), None)
         context = [
-            {"title": e.get("title"), "unit": unit_of(e), "path": e["path"]}
+            {"title": e.get("title"), "unit": unit_of(e), "path": e["path"], "now_url": e.get("now_url")}
             for e in entries
             if unit_of(e).lower() in ADMIN_UNITS
             and any(k in (e.get("title") or "").lower() for k in ("assessment", "brief", "overview", "coursework", "specification", "exam", "rubric", "template"))
@@ -1060,7 +1081,10 @@ class NowService:
                     if s.get("module_code") == code_prefix and s.get("date") and monday.isoformat() <= s["date"] <= sunday.isoformat()
                 ]
             files = sorted(
-                ({"title": display_title(e), "kind": classify_kind(e), "path": e["path"]} for e in by_unit.get(u["unit"], [])),
+                (
+                    {"title": display_title(e), "kind": classify_kind(e), "path": e["path"], "now_url": e.get("now_url"), "rel_path": e.get("rel_path")}
+                    for e in by_unit.get(u["unit"], [])
+                ),
                 key=lambda f: (KIND_ORDER.get(f["kind"], 9), f["title"].lower()),
             )
             st = latest.get(f"{ou}:{u['unit']}")
