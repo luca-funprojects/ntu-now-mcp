@@ -397,27 +397,54 @@ async def download_file(
 @server.tool(annotations=READ_ONLY)
 @guarded
 async def get_timetable(
-    weeks_ahead: Annotated[int, Field(description="How many weeks beyond the current one to read (0-6).")] = 1,
+    weeks_ahead: Annotated[int, Field(description="How many weeks beyond the current one to return (0-12).")] = 1,
     hours_ahead: Annotated[int, Field(description="Window for the 'upcoming' list, in hours.")] = 48,
-    refresh: Annotated[bool, Field(description="Re-read NOW even if a copy from the last 12 hours is cached.")] = False,
+    refresh: Annotated[bool, Field(description="Re-fetch even if a copy from the last 12 hours is cached.")] = False,
+    ical_url: Annotated[str | None, Field(description="The timetable's 'Subscribe to iCal' link, the first time; it is remembered afterwards.")] = None,
 ) -> Any:
-    """The student's teaching timetable from NOW's Timetable tool: every session (day, date, time, room, lecturer, type, module, group) for this week and the next ones, plus 'upcoming' (what is on in the next hours_ahead). Cached for 12 hours; refresh=true re-reads."""
-    weeks_ahead = max(0, min(6, weeks_ahead))
-    data = None if refresh else svc.cached_timetable()
-    if data is not None and len(data.get("weeks") or []) < weeks_ahead + 1:
+    """The student's teaching timetable: every session (day, date, time, room, lecturer, type, module, group) for this week and the next ones, plus 'upcoming' (what is on in the next hours_ahead). Reads the personal iCal feed when one is known (whole year, no sign-in), otherwise NOW's Timetable tool through the browser. Cached for 12 hours."""
+    import json as _json
+
+    weeks_ahead = max(0, min(12, weeks_ahead))
+    cached = svc.cached_timetable(max_age_hours=10**6) or {}
+    feed = ical_url or os.environ.get("NOW_TIMETABLE_ICS") or cached.get("ical_url")
+    data = None if (refresh or ical_url) else svc.cached_timetable()
+    if data is not None and (len(data.get("weeks") or []) < weeks_ahead + 1 and not data.get("all_sessions")):
         data = None
+    if data is None and feed:
+        try:
+            await svc.fetch_ics(feed)
+            data = svc.timetable_from_ics(feed, weeks_ahead)
+        except Exception as exc:  # noqa: BLE001
+            feed_error = f"{exc.__class__.__name__}: {str(exc)[:200]}"
+            data = None
+        else:
+            feed_error = None
+    else:
+        feed_error = None
     if data is None:
         raw = await browser.timetable(path=os.environ.get("NOW_TIMETABLE_PATH") or None, weeks_ahead=weeks_ahead)
         if "error" in raw:
+            if feed_error:
+                raw["ical_error"] = feed_error
             return raw
         data = svc.timetable_from_raw(raw)
-        if data.get("ical_url"):
+        if data.get("ical_url") and not feed:
             try:
-                data["ical"] = await svc.fetch_ics(data["ical_url"])
+                await svc.fetch_ics(data["ical_url"])
+                data = svc.timetable_from_ics(data["ical_url"], weeks_ahead)
             except Exception as exc:  # noqa: BLE001
                 data["ical"] = {"error": f"{exc.__class__.__name__}: {str(exc)[:160]}"}
-            svc._timetable_cache.write_text(__import__("json").dumps(data, indent=1))
-    return svc.timetable_view(data, hours_ahead=hours_ahead)
+                svc._timetable_cache.write_text(_json.dumps(data, indent=1))
+    elif data.get("all_sessions"):
+        from datetime import datetime as _dt
+        from now_mcp.timetable import sessions_to_weeks
+        data["weeks"] = sessions_to_weeks(data["all_sessions"], _dt.now(cfg.tz).date(), weeks_ahead + 1)
+    view = svc.timetable_view(data, hours_ahead=hours_ahead)
+    if feed_error:
+        view["ical_error"] = feed_error
+    view.pop("all_sessions", None)
+    return view
 
 
 # ---------------------------------------------------------------- everything

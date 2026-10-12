@@ -114,3 +114,116 @@ def parse_ics(text: str) -> list[dict[str, Any]]:
             if name in ("SUMMARY", "LOCATION", "DESCRIPTION", "DTSTART", "DTEND", "UID"):
                 cur[name.lower()] = value.replace("\\,", ",").replace("\\n", "\n").strip()
     return events
+
+
+# ---------------------------------------------------------------- iCal feed → sessions
+
+TYPE_WORDS = ("practical", "lab", "lecture", "seminar", "tutorial", "workshop", "drop-in", "drop in", "exam", "meeting")
+TEACHING_WEEK1_MONDAY = date(2026, 9, 21)   # NTU week 9 == teaching week 1 of 2026/27
+NTU_WEEK_OFFSET = 9
+
+
+def ntu_week_of(d: date) -> int | None:
+    """NTU's week number as the Timetable tool shows it (week 12 = w/c 12 Oct 2026)."""
+    monday = d - timedelta(days=d.weekday())
+    delta = (monday - TEACHING_WEEK1_MONDAY).days // 7
+    return NTU_WEEK_OFFSET + delta if 0 <= delta < 60 else None
+
+
+def _ics_datetime(value: str, params: str, tz: ZoneInfo) -> tuple[datetime | None, bool]:
+    """Parse an iCal DTSTART/DTEND value into a tz-aware datetime; returns (dt, all_day)."""
+    v = (value or "").strip()
+    if not v:
+        return None, False
+    if len(v) == 8 and v.isdigit():
+        return datetime.strptime(v, "%Y%m%d").replace(tzinfo=tz), True
+    try:
+        if v.endswith("Z"):
+            dt = datetime.strptime(v, "%Y%m%dT%H%M%SZ").replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
+        else:
+            m = re.search(r"TZID=([^;:]+)", params or "")
+            src = ZoneInfo(m.group(1)) if m else tz
+            dt = datetime.strptime(v, "%Y%m%dT%H%M%S").replace(tzinfo=src).astimezone(tz)
+    except (ValueError, KeyError):
+        return None, False
+    return dt, False
+
+
+def parse_ics_full(text: str) -> list[dict[str, Any]]:
+    """Like parse_ics but keeps each property's parameters (needed for TZID)."""
+    events: list[dict[str, Any]] = []
+    lines: list[str] = []
+    for raw in (text or "").splitlines():
+        if raw.startswith((" ", "\t")) and lines:
+            lines[-1] += raw[1:]
+        else:
+            lines.append(raw.rstrip("\r"))
+    cur: dict[str, Any] | None = None
+    for line in lines:
+        if line == "BEGIN:VEVENT":
+            cur = {}
+        elif line == "END:VEVENT":
+            if cur is not None:
+                events.append(cur)
+            cur = None
+        elif cur is not None and ":" in line:
+            key, value = line.split(":", 1)
+            name, _, params = key.partition(";")
+            name = name.upper()
+            if name in ("SUMMARY", "LOCATION", "DESCRIPTION", "DTSTART", "DTEND", "UID"):
+                cur[name.lower()] = value.replace("\\,", ",").replace("\\;", ";").replace("\\n", "\n").strip()
+                if params:
+                    cur[name.lower() + "_params"] = params
+    return events
+
+
+def _field(description: str, label: str) -> str:
+    m = re.search(rf"(?:{label})\s*[:\-]\s*(.+)", description or "", re.I)
+    return m.group(1).strip() if m else ""
+
+
+def ics_events_to_sessions(events: list[dict[str, Any]], tz: ZoneInfo) -> list[dict[str, Any]]:
+    """Shape iCal events like the Timetable grid's rows so both sources look the same downstream."""
+    out: list[dict[str, Any]] = []
+    for ev in events:
+        start, all_day = _ics_datetime(ev.get("dtstart", ""), ev.get("dtstart_params", ""), tz)
+        end, _ = _ics_datetime(ev.get("dtend", ""), ev.get("dtend_params", ""), tz)
+        if start is None:
+            continue
+        summary = ev.get("summary", "")
+        desc = ev.get("description", "")
+        blob = f"{summary} {desc}"
+        code = MODULE_CODE_RE.search(blob)
+        kind = next((w for w in TYPE_WORDS if w in blob.lower()), "")
+        module = re.sub(r"\s*\([A-Z]{3,5}\d{5}\)\s*", " ", summary)
+        module = re.split(r"\s+[-–]\s+", module)[0].strip() if module else summary
+        out.append(
+            {
+                "day": start.strftime("%A"),
+                "date": start.date().isoformat(),
+                "start": "all day" if all_day else start.strftime("%H:%M"),
+                "end": "" if all_day or end is None else end.strftime("%H:%M"),
+                "room": ev.get("location", ""),
+                "lecturer": _field(desc, "Lecturer|Staff|Tutor"),
+                "type": _field(desc, "Type|Activity") or (kind.capitalize() if kind else ""),
+                "module": module,
+                "module_code": code.group(1) if code else None,
+                "group": _field(desc, "Group"),
+                "summary": summary,
+                "description": desc[:300],
+            }
+        )
+    out.sort(key=lambda s: (s["date"], s["start"]))
+    return out
+
+
+def sessions_to_weeks(sessions: list[dict[str, Any]], from_day: date, weeks: int) -> list[dict[str, Any]]:
+    """Group sessions into Monday-based weeks from the week containing ``from_day``, ``weeks`` weeks long."""
+    monday = from_day - timedelta(days=from_day.weekday())
+    out = []
+    for i in range(max(1, weeks)):
+        start = monday + timedelta(days=7 * i)
+        end = start + timedelta(days=6)
+        rows = [s for s in sessions if s.get("date") and start.isoformat() <= s["date"] <= end.isoformat()]
+        out.append({"week": ntu_week_of(start), "start": start.isoformat(), "end": end.isoformat(), "sessions": rows})
+    return out

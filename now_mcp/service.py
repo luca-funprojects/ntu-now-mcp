@@ -20,7 +20,7 @@ from .client import NowApiError, NowClient
 from .config import Config
 from .extract import TextCache, snippets
 from .study import ADMIN_UNITS, assemble_pack, classify_kind, extract_file_links, pick_unit, unit_of, unit_week, units_summary
-from .timetable import parse_ics, parse_timetable_table, parse_week_header, upcoming
+from .timetable import ics_events_to_sessions, parse_ics_full, parse_timetable_table, parse_week_header, sessions_to_weeks, upcoming
 from .util import clip, days_until, fmt_local, norm, parse_iso, safe_name, text_of, utcnow, window
 
 DOWNLOADABLE_TYPES = {"File", "ContentService"}
@@ -1011,7 +1011,7 @@ class NowService:
         return data
 
     async def fetch_ics(self, url: str) -> dict[str, Any]:
-        """Fetch and parse the timetable's iCal feed (only from NTU hosts)."""
+        """Fetch the timetable's iCal feed (NTU hosts only) and keep a copy on disk."""
         import httpx
         from urllib.parse import urlparse
 
@@ -1022,21 +1022,39 @@ class NowService:
             raise ValueError(f"Refusing to fetch a calendar from {host}; only NTU hosts are allowed.")
         async with httpx.AsyncClient(follow_redirects=True, timeout=30) as http:
             r = await http.get(url, headers={"User-Agent": "ntu-now-mcp"})
-        if r.status_code != 200 or "BEGIN:VCALENDAR" not in r.text[:2000]:
+        if r.status_code != 200 or "BEGIN:VCALENDAR" not in r.text[:4000]:
             raise ValueError(f"The iCal link did not return a calendar (HTTP {r.status_code}).")
-        events = parse_ics(r.text)
+        events = parse_ics_full(r.text)
         (self.cfg.data_dir / "_timetable.ics").write_text(r.text)
-        return {"url": url, "events": len(events), "first": min((e.get("dtstart", "") for e in events), default=None), "last": max((e.get("dtstart", "") for e in events), default=None)}
+        starts = sorted(e.get("dtstart", "") for e in events if e.get("dtstart"))
+        return {"url": url, "events": len(events), "first": starts[0] if starts else None, "last": starts[-1] if starts else None}
+
+    def timetable_from_ics(self, url: str, weeks_ahead: int) -> dict[str, Any]:
+        """Build the same week structure the browser route produces, from the saved iCal feed."""
+        text = (self.cfg.data_dir / "_timetable.ics").read_text()
+        sessions = ics_events_to_sessions(parse_ics_full(text), self.cfg.tz)
+        today = datetime.now(self.cfg.tz).date()
+        data = {
+            "fetched_at": utcnow().isoformat(),
+            "source": "ical",
+            "ical_url": url,
+            "ical": {"events": len(sessions), "first": sessions[0]["date"] if sessions else None, "last": sessions[-1]["date"] if sessions else None},
+            "weeks": sessions_to_weeks(sessions, today, weeks_ahead + 1),
+            "all_sessions": sessions,
+        }
+        self._timetable_cache.write_text(json.dumps(data, indent=1))
+        return data
 
     def timetable_view(self, data: dict[str, Any], hours_ahead: int = 48) -> dict[str, Any]:
         """The cached timetable plus what is coming up, in local time."""
         now = datetime.now(self.cfg.tz)
-        sessions = [s for w in data.get("weeks") or [] for s in w.get("sessions") or []]
+        sessions = data.get("all_sessions") or [s for w in data.get("weeks") or [] for s in w.get("sessions") or []]
         return {
             "fetched_at": fmt_local(data.get("fetched_at"), self.cfg.tz),
             "today": now.strftime("%A %d %b %Y, %H:%M"),
             "upcoming": upcoming(sessions, now, hours=hours_ahead),
             "weeks": data.get("weeks"),
+            "sessions_known_until": max((s["date"] for s in sessions if s.get("date")), default=None),
             "ical_url": data.get("ical_url"),
             "ical": data.get("ical"),
             "source": data.get("source"),

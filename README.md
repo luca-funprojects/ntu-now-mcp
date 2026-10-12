@@ -199,10 +199,12 @@ if the option isn't there.
   `read_document`. `list_units(ou)` is the menu. Pages that only link to the
   real slides are followed automatically when content is downloaded, so the
   slides are in the pack too.
-- Timetable: `get_timetable()` reads NOW's Timetable tool (the navbar link, found
-  automatically; override with `NOW_TIMETABLE_PATH`) and caches it in
-  `data/_timetable.json` for 12 hours. If the tool offers a "Subscribe to iCal"
-  link, the feed is fetched too (NTU hosts only) and kept in `data/_timetable.ics`.
+- Timetable: `get_timetable()` prefers the personal iCal feed (the "Subscribe to
+  iCal" link on NOW's Timetable page) — give it once as `ical_url` or set
+  `NOW_TIMETABLE_ICS`; it is remembered, needs no sign-in, and covers the whole
+  year. Without a feed it drives NOW's Timetable tool through the browser (that
+  tool lives on services.ntu.ac.uk and wants its own sign-in, so the feed is the
+  reliable route). Cached in `data/_timetable.json` for 12 hours.
 - The download index (`data/_index.json`) is written under a lock and merged,
   so parallel downloads can't lose each other's entries; if it is ever lost,
   the next `download_content` adopts the files already on disk instead of

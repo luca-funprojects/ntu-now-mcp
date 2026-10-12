@@ -181,3 +181,71 @@ def test_browser_reads_frames_and_timetable(site, tmp_path: Path):
     assert view["weeks"] and "upcoming" in view and view["ical_url"]
     with pytest.raises(ValueError):
         asyncio.run(svc.fetch_ics("https://example.com/feed.ics"))               # only NTU hosts
+
+
+# ------------------------------------------------------------------ iCal feed route
+
+FEED = """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:a1
+DTSTART;TZID=Europe/London:20261013T100000
+DTEND;TZID=Europe/London:20261013T110000
+SUMMARY:Service-Centric & Cloud Comp (COMP30231) - Subject lecture
+LOCATION:(Clifton) Clifton Teaching & Learning Centre LT3 Lecture Theatre 3
+DESCRIPTION:Lecturer: Ismahane Cheheb\\nType: Subject lecture\\nGroup: 
+END:VEVENT
+BEGIN:VEVENT
+UID:a2
+DTSTART:20261013T100000Z
+DTEND:20261013T120000Z
+SUMMARY:Mobile Platform Applications (ITEC31041) - Practical / Lab
+LOCATION:(Clifton) Mary Ann Evans 206 IT Room
+DESCRIPTION:Lecturer: Thomas Johnson\\, Arshad Sher\\nGroup: SE_1
+END:VEVENT
+BEGIN:VEVENT
+UID:a3
+DTSTART;VALUE=DATE:20261023
+SUMMARY:PPD deadline
+END:VEVENT
+BEGIN:VEVENT
+UID:a4
+DTSTART;TZID=Europe/London:20261020T130000
+DTEND;TZID=Europe/London:20261020T140000
+SUMMARY:Advanced Software Engineering (SOFT30161) - Subject lecture
+LOCATION:(Clifton) Pavilion 121
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+def test_ics_feed_becomes_sessions_and_weeks(tmp_path: Path):
+    from datetime import date
+    from now_mcp.service import NowService
+    from now_mcp.timetable import ics_events_to_sessions, ntu_week_of, parse_ics_full, sessions_to_weeks
+
+    events = parse_ics_full(FEED)
+    assert len(events) == 4 and events[0]["dtstart_params"] == "TZID=Europe/London"
+    sessions = ics_events_to_sessions(events, TZ)
+    assert [s["module_code"] for s in sessions] == ["COMP30231", "ITEC31041", "SOFT30161", None]   # sorted by date
+    lec = sessions[0]
+    assert (lec["day"], lec["date"], lec["start"], lec["end"]) == ("Tuesday", "2026-10-13", "10:00", "11:00")
+    assert lec["lecturer"] == "Ismahane Cheheb" and lec["type"] == "Subject lecture" and lec["module"] == "Service-Centric & Cloud Comp"
+    lab = sessions[1]
+    assert lab["start"] == "11:00" and lab["end"] == "13:00"              # UTC converted to BST
+    assert lab["lecturer"] == "Thomas Johnson, Arshad Sher" and lab["group"] == "SE_1"
+    assert sessions[3]["start"] == "all day" and sessions[3]["module"] == "PPD deadline"
+    assert ntu_week_of(date(2026, 10, 12)) == 12 and ntu_week_of(date(2026, 10, 18)) == 12 and ntu_week_of(date(2026, 9, 21)) == 9
+
+    weeks = sessions_to_weeks(sessions, date(2026, 10, 12), 2)
+    assert [w["week"] for w in weeks] == [12, 13]
+    assert len(weeks[0]["sessions"]) == 2 and len(weeks[1]["sessions"]) == 2
+
+    cfg = Config(state_dir=tmp_path / "s", data_dir=tmp_path / "d")
+    cfg.state_dir.mkdir(); cfg.data_dir.mkdir()
+    (cfg.data_dir / "_timetable.ics").write_text(FEED)
+    svc = NowService(cfg, client=None)
+    data = svc.timetable_from_ics("https://services.ntu.ac.uk/x.ics", weeks_ahead=1)
+    assert data["source"] == "ical" and data["ical"]["events"] == 4 and len(data["weeks"]) == 2
+    view = svc.timetable_view(data, hours_ahead=24)
+    assert view["sessions_known_until"] == "2026-10-23" and view["ical_url"].endswith("x.ics")
