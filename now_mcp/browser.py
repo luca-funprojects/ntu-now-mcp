@@ -104,7 +104,7 @@ class BrowserSession:
     def _url(self, target: str) -> str:
         if target.startswith("http"):
             host = (urlparse(target).hostname or "").lower()
-            allowed = [self.cfg.host.lower(), "ntu.ac.uk", "microsoftonline.com", "live.com"]
+            allowed = [self.cfg.host.split(":")[0].lower(), "ntu.ac.uk", "microsoftonline.com", "live.com"]
             allowed += [h.strip().lower() for h in os.environ.get("NOW_BROWSER_ALLOWED_HOSTS", "").split(",") if h.strip()]
             if not any(host == a or host.endswith("." + a) for a in allowed):
                 raise ValueError(f"The browser only opens NTU pages (and Microsoft sign-in); {host} is not allowed. Add it to NOW_BROWSER_ALLOWED_HOSTS if it is one of NTU's services.")
