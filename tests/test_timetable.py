@@ -188,20 +188,27 @@ def test_browser_reads_frames_and_timetable(site, tmp_path: Path):
 FEED = """BEGIN:VCALENDAR
 VERSION:2.0
 BEGIN:VEVENT
+UID:s0
+DTSTART;TZID=Europe/London:20270101T120000
+DTEND;TZID=Europe/London:20270101T141000
+SUMMARY:Service Stat
+DESCRIPTION:This event is added to aid troubleshooting and is not a timetabled event.  The created date shows when the data was last refreshed.
+END:VEVENT
+BEGIN:VEVENT
 UID:a1
 DTSTART;TZID=Europe/London:20261013T100000
 DTEND;TZID=Europe/London:20261013T110000
-SUMMARY:Service-Centric & Cloud Comp (COMP30231) - Subject lecture
-LOCATION:(Clifton) Clifton Teaching & Learning Centre LT3 Lecture Theatre 3
-DESCRIPTION:Lecturer: Ismahane Cheheb\\nType: Subject lecture\\nGroup: 
+SUMMARY:COMP30231 - Service-Centric & Cloud Comp - Subject lecture
+LOCATION:(Clif) Clifton Teaching & Learning Centre CTLLT3 Lecture Theatre 3
+DESCRIPTION:Subject lecture with Ismahane Cheheb \\n in room (Clif) Clifton Teaching & Learning Centre CTLLT3 Lecture Theatre 3\\n for group 
 END:VEVENT
 BEGIN:VEVENT
 UID:a2
 DTSTART:20261013T100000Z
 DTEND:20261013T120000Z
-SUMMARY:Mobile Platform Applications (ITEC31041) - Practical / Lab
-LOCATION:(Clifton) Mary Ann Evans 206 IT Room
-DESCRIPTION:Lecturer: Thomas Johnson\\, Arshad Sher\\nGroup: SE_1
+SUMMARY:ITEC31041 - Mobile Platform Applications - Practical / Lab
+LOCATION:(Clif) Mary Ann Evans MAE206 IT Room
+DESCRIPTION:Practical / Lab with Thomas Johnson\\, Arshad Sher \\n in room (Clif) Mary Ann Evans MAE206 IT Room\\n for group SE_1
 END:VEVENT
 BEGIN:VEVENT
 UID:a3
@@ -225,9 +232,9 @@ def test_ics_feed_becomes_sessions_and_weeks(tmp_path: Path):
     from now_mcp.timetable import ics_events_to_sessions, ntu_week_of, parse_ics_full, sessions_to_weeks
 
     events = parse_ics_full(FEED)
-    assert len(events) == 4 and events[0]["dtstart_params"] == "TZID=Europe/London"
+    assert len(events) == 5 and events[1]["dtstart_params"] == "TZID=Europe/London"
     sessions = ics_events_to_sessions(events, TZ)
-    assert [s["module_code"] for s in sessions] == ["COMP30231", "ITEC31041", "SOFT30161", None]   # sorted by date
+    assert [s["module_code"] for s in sessions] == ["COMP30231", "ITEC31041", "SOFT30161", None]   # sorted by date; "Service Stat" dropped
     lec = sessions[0]
     assert (lec["day"], lec["date"], lec["start"], lec["end"]) == ("Tuesday", "2026-10-13", "10:00", "11:00")
     assert lec["lecturer"] == "Ismahane Cheheb" and lec["type"] == "Subject lecture" and lec["module"] == "Service-Centric & Cloud Comp"

@@ -182,35 +182,51 @@ def _field(description: str, label: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+MODULE_CODE_ANY_RE = re.compile(r"\b([A-Z]{3,5}\d{5})\b")
+
+
 def ics_events_to_sessions(events: list[dict[str, Any]], tz: ZoneInfo) -> list[dict[str, Any]]:
-    """Shape iCal events like the Timetable grid's rows so both sources look the same downstream."""
+    """Shape iCal events like the Timetable grid's rows so both sources look the same downstream.
+
+    NTU's feed writes "CODE - Module name - Type" as the summary and
+    "Type with Lecturer A, Lecturer B \n in room X\n for group G" as the description.
+    """
     out: list[dict[str, Any]] = []
     for ev in events:
+        summary = (ev.get("summary") or "").strip()
+        desc = ev.get("description") or ""
+        if "not a timetabled event" in desc.lower() or summary.lower() == "service stat":
+            continue  # NTU's feed-health marker
         start, all_day = _ics_datetime(ev.get("dtstart", ""), ev.get("dtstart_params", ""), tz)
         end, _ = _ics_datetime(ev.get("dtend", ""), ev.get("dtend_params", ""), tz)
         if start is None:
             continue
-        summary = ev.get("summary", "")
-        desc = ev.get("description", "")
-        blob = f"{summary} {desc}"
-        code = MODULE_CODE_RE.search(blob)
-        kind = next((w for w in TYPE_WORDS if w in blob.lower()), "")
-        module = re.sub(r"\s*\([A-Z]{3,5}\d{5}\)\s*", " ", summary)
-        module = re.split(r"\s+[-–]\s+", module)[0].strip() if module else summary
+        parts = [x.strip() for x in re.split(r"\s+[-\u2013]\s+", summary) if x.strip()]
+        code = MODULE_CODE_ANY_RE.search(summary) or MODULE_CODE_ANY_RE.search(desc)
+        if len(parts) >= 3 and MODULE_CODE_ANY_RE.fullmatch(parts[0]):
+            module, kind = parts[1], " - ".join(parts[2:])
+        elif len(parts) >= 2:
+            module, kind = re.sub(r"\s*\([A-Z]{3,5}\d{5}\)\s*", " ", parts[0]).strip(), " - ".join(parts[1:])
+        else:
+            module, kind = re.sub(r"\s*\(?[A-Z]{3,5}\d{5}\)?\s*", " ", summary).strip(), ""
+        if not kind:
+            kind = next((w.capitalize() for w in TYPE_WORDS if w in f"{summary} {desc}".lower()), "")
+        m_lect = re.search(r"\bwith\s+(.+?)\s*(?:\n|$|\s+in room\b)", desc, re.I | re.S)
+        m_room = re.search(r"\bin room\s+(.+?)\s*(?:\n|$|\s+for group\b)", desc, re.I | re.S)
+        m_group = re.search(r"\bfor group\s+(.+?)\s*(?:\n|$)", desc, re.I)
         out.append(
             {
                 "day": start.strftime("%A"),
                 "date": start.date().isoformat(),
                 "start": "all day" if all_day else start.strftime("%H:%M"),
                 "end": "" if all_day or end is None else end.strftime("%H:%M"),
-                "room": ev.get("location", ""),
-                "lecturer": _field(desc, "Lecturer|Staff|Tutor"),
-                "type": _field(desc, "Type|Activity") or (kind.capitalize() if kind else ""),
+                "room": (ev.get("location") or (m_room.group(1).strip() if m_room else "")),
+                "lecturer": (m_lect.group(1).strip() if m_lect else _field(desc, "Lecturer|Staff|Tutor")),
+                "type": _field(desc, "Type|Activity") or kind,
                 "module": module,
                 "module_code": code.group(1) if code else None,
-                "group": _field(desc, "Group"),
+                "group": (m_group.group(1).strip() if m_group else _field(desc, "Group")),
                 "summary": summary,
-                "description": desc[:300],
             }
         )
     out.sort(key=lambda s: (s["date"], s["start"]))
