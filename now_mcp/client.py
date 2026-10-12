@@ -48,6 +48,20 @@ class NowClient:
         self.flow: LoginFlow | None = None
         self.last_ok: float | None = None
         self.last_refresh: float | None = None
+        self._state_mtime = self._current_state_mtime()
+
+    def _current_state_mtime(self) -> float:
+        try:
+            return self.cfg.state_file.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def _reload_if_state_changed(self) -> None:
+        """Pick up a session file copied in (e.g. by scp) after the server started."""
+        mtime = self._current_state_mtime()
+        if mtime != self._state_mtime:
+            self._state_mtime = mtime
+            self.reload_cookies()
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -60,6 +74,7 @@ class NowClient:
         self._http.cookies = load_cookie_jar(self.cfg)
 
     async def is_logged_in(self) -> bool:
+        self._reload_if_state_changed()
         try:
             r = await self._http.get(f"/d2l/api/lp/{await self.lp()}/users/whoami")
         except httpx.HTTPError:
