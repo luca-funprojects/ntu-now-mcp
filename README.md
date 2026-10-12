@@ -28,8 +28,9 @@ Claude (phone / desktop)  ──MCP──▶  ntu-now-mcp  ──your session─
 | `list_quizzes` | quiz windows and due dates |
 | `get_deadlines` | one merged, sorted list of everything due (assignments + quizzes + calendar), overdue flagged |
 | `get_calendar`, `list_announcements`, `get_grades` | what they say |
-| `list_content`, `download_content`, `download_assignment_attachments` | the Content tree (with *unread* flags) and the files themselves |
+| `list_content`, `download_content`, `download_assignment_attachments` | the Content tree (with *unread* flags) and the files themselves — including documents a page only links to ("slides available from this link") |
 | `read_document`, `search_downloads`, `list_downloads` | read PDF/PPTX/DOCX/HTML as text, search across everything |
+| `get_study_pack`, `list_units` | **one lecture/week, whole**: slides, lecture page, notes, lab sheets and readings in reading order with full text, plus the neighbouring weeks and the module's assessment pages — what Claude loads when you say "let's do lecture 4" |
 | `list_groups`, `get_classlist`, `list_discussions`, `get_discussion_posts` | group work and forums |
 | `list_new_content`, `download_file` | what appeared or changed since the last check (for the scheduled watcher); fetch any NOW-hosted file such as slides linked from a page |
 | `sync_all` | pull everything into `data/snapshot.json` and download all new files |
@@ -190,6 +191,17 @@ if the option isn't there.
 - Downloads live in `data/<MODULE CODE>/<content path>/…`; extracted text is
   cached in `data/_text_cache/`. Panopto/YouTube/SharePoint links can't be
   downloaded and are listed as `external_links_not_downloadable`.
+- Studying one lecture: `get_study_pack(ou, "lecture 4")` (or `"week 12"`,
+  `"activity 03"`, `"sequential data structures"`) returns that unit's files
+  in full — slides first, then the lecture page, notes, lab sheets, readings —
+  up to `max_chars`, with the rest listed under `read_separately` for
+  `read_document`. `list_units(ou)` is the menu. Pages that only link to the
+  real slides are followed automatically when content is downloaded, so the
+  slides are in the pack too.
+- The download index (`data/_index.json`) is written under a lock and merged,
+  so parallel downloads can't lose each other's entries; if it is ever lost,
+  the next `download_content` adopts the files already on disk instead of
+  re-downloading or duplicating them.
 
 ## Troubleshooting
 
@@ -214,7 +226,8 @@ python -m now_mcp.server --http --verbose   # Streamable HTTP on NOW_HTTP_HOST:N
 
 Layout: `config.py` (env), `session.py` (Playwright sign-in state machine +
 cookie export), `client.py` (httpx Brightspace client with silent re-login),
-`service.py` (shaping, downloads, deadline merge), `extract.py` (file → text),
+`service.py` (shaping, downloads, deadline merge), `study.py` (study packs:
+unit matching, reading order, link extraction), `extract.py` (file → text),
 `server.py` (the MCP tools), `login.py` (CLI).
 
 Brightspace API reference: https://docs.valence.desire2learn.com/

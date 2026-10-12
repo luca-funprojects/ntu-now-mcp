@@ -47,8 +47,11 @@ Personal read-only connector to NTU's NOW (Brightspace) for one student.
 Base URL: {cfg.base_url}.  Times in *_local fields are {cfg.timezone}.
 
 Start with list_modules to get org-unit ids (ou), then get_deadlines for the
-big picture.  download_content + read_document/search_downloads let you read
-lecture material.  If a tool returns error="needs_login", follow its message:
+big picture.  When the student picks a lecture or week to study, call
+get_study_pack(ou, query) — it returns that week's slides, notes, lab sheets
+and readings in full, in reading order (list_units shows the menu).
+download_content + read_document/search_downloads cover anything else.
+If a tool returns error="needs_login", follow its message:
 now_login_start begins a sign-in (the student may need to approve an MFA
 prompt on their phone; now_login_poll reports progress).  now_api_get and
 now_page_text are escape hatches for anything not covered by a dedicated tool;
@@ -263,9 +266,10 @@ async def download_content(
     ou: OU,
     topic_ids: Annotated[list[int] | None, Field(description="Specific topic ids; omit for every downloadable file in the module.")] = None,
     force: Annotated[bool, Field(description="Re-download even if unchanged.")] = False,
+    follow_links: Annotated[bool, Field(description="Also fetch documents that HTML pages link to (e.g. 'slides available from this link').")] = True,
 ) -> Any:
-    """Download the module's files (PDF/PPTX/DOCX/HTML pages) into the data directory and extract their text for reading/searching. Unchanged files are skipped."""
-    return await svc.download_content(ou, topic_ids=topic_ids, force=force)
+    """Download the module's files (PDF/PPTX/DOCX/HTML pages) into the data directory and extract their text for reading/searching. Unchanged files are skipped; documents linked from pages are fetched too."""
+    return await svc.download_content(ou, topic_ids=topic_ids, force=force, follow_links=follow_links)
 
 
 @server.tool(annotations=READ_ONLY)
@@ -302,6 +306,31 @@ async def search_downloads(
 ) -> Any:
     """Search the text of all downloaded files for a phrase; returns matching files with snippets."""
     return svc.search_downloads(query, ou=ou, max_results=max_results)
+
+
+# -------------------------------------------------------------- study packs
+
+@server.tool(annotations=READ_ONLY)
+@guarded
+async def list_units(
+    ou: OU,
+    refresh: Annotated[bool, Field(description="Check NOW for new files first.")] = False,
+) -> Any:
+    """The module's weeks/units as NOW groups them (folder name, week number, what each holds) — the menu for get_study_pack."""
+    return await svc.list_units(ou, refresh=refresh)
+
+
+@server.tool(annotations=READ_ONLY)
+@guarded
+async def get_study_pack(
+    ou: OU,
+    query: Annotated[str | None, Field(description="What to study, as the student says it: 'lecture 4', 'week 12', 'sequential data structures', 'activity 03'.")] = None,
+    week: Annotated[int | None, Field(description="NOW week number of the unit, if known.")] = None,
+    max_chars: Annotated[int, Field(description="Text budget for this call (up to 250000); anything beyond it is listed under read_separately.")] = 100000,
+    refresh: Annotated[bool, Field(description="Check NOW for new or changed files in the module first (fast when nothing changed).")] = True,
+) -> Any:
+    """Everything NOW holds for one lecture/week in one call, in reading order: slides (including ones a page only links to), the lecture page, notes, lab/exercise sheets and readings, with full text — plus where the week sits (previous/next unit) and the module's assessment pages. Use this when the student picks a lecture or week to study."""
+    return await svc.study_pack(ou, query=query, week=week, max_chars=max(5000, min(250000, max_chars)), refresh=refresh)
 
 
 # -------------------------------------------------------------- people/groups

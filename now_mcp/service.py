@@ -6,6 +6,7 @@ have no I/O so they are unit-testable; ``NowService`` does the orchestration.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import os
@@ -13,10 +14,12 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from .client import NowApiError, NowClient
 from .config import Config
 from .extract import TextCache, snippets
+from .study import ADMIN_UNITS, assemble_pack, classify_kind, extract_file_links, pick_unit, unit_of, unit_week, units_summary
 from .util import clip, days_until, fmt_local, norm, parse_iso, safe_name, text_of, utcnow, window
 
 DOWNLOADABLE_TYPES = {"File", "ContentService"}
@@ -260,6 +263,7 @@ class NowService:
         self._modules_at = 0.0
         self._classlists: dict[int, tuple[float, dict[int, dict[str, Any]]]] = {}
         self._index_file = cfg.data_dir / "_index.json"
+        self._index_lock = asyncio.Lock()
 
     # -- modules --------------------------------------------------------------
 
@@ -403,11 +407,95 @@ class NowService:
                 return {}
         return {}
 
-    def _save_index(self, index: dict[str, Any]) -> None:
-        self._index_file.write_text(json.dumps(index, indent=1))
+    async def _merge_index(self, updates: dict[str, Any]) -> None:
+        """Add/replace entries without clobbering what other concurrent downloads wrote.
+
+        Re-reads the file under a lock and writes atomically; a plain overwrite lost whole
+        modules when several downloads ran at once.
+        """
+        if not updates:
+            return
+        async with self._index_lock:
+            index = self._load_index()
+            index.update(updates)
+            tmp = self._index_file.with_name("_index.json.tmp")
+            tmp.write_text(json.dumps(index, indent=1))
+            os.replace(tmp, self._index_file)
 
     def _module_dir(self, mod: dict[str, Any]) -> Path:
         return self.cfg.data_dir / safe_name(mod.get("code") or f"ou{mod.get('ou')}")
+
+    def _topic_folder(self, mod: dict[str, Any], topic: dict[str, Any]) -> Path:
+        folder = self._module_dir(mod)
+        for part in (topic.get("path") or "").split(" / "):
+            if part:
+                folder = folder / safe_name(part, 48)
+        return folder
+
+    def _find_orphan(self, mod: dict[str, Any], topic: dict[str, Any], indexed_paths: set[str]) -> Path | None:
+        """A file an earlier download left on disk whose index entry has since been lost."""
+        folder = self._topic_folder(mod, topic)
+        if not folder.is_dir():
+            return None
+        modified = parse_iso(topic.get("last_modified"))
+        prefix = f"{topic['topic_id']}_"
+        url_name = unquote(Path((topic.get("url") or "").split("?")[0]).name)
+        expected = None
+        if url_name:
+            stem, ext = os.path.splitext(safe_name(url_name, 150))
+            expected = stem[:90] + ext
+        for p in sorted(folder.iterdir()):
+            if not p.is_file() or str(p) in indexed_paths or "_att_" in p.name:
+                continue
+            if p.name.startswith(prefix) or (expected and p.name == expected):
+                if modified and datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc) < modified:
+                    return None  # NOW's copy is newer than the file on disk: download again
+                return p
+        return None
+
+    async def _follow_links(self, mod: dict[str, Any], topic: dict[str, Any], entry: dict[str, Any],
+                            index: dict[str, Any], updates: dict[str, Any], force: bool = False) -> list[dict[str, Any]]:
+        """Fetch documents an HTML topic page links to ("the slides are available from this link")."""
+        ou = mod.get("ou")
+        page = Path(entry["path"])
+        try:
+            html = page.read_text(errors="replace")
+        except OSError:
+            return []
+        results: list[dict[str, Any]] = []
+        for ln in extract_file_links(html, topic.get("url") or "", self.cfg.base_url, self.cfg.host)[:12]:
+            akey = f"{ou}:{topic['topic_id']}:{ln['name']}"
+            prior = updates.get(akey) or index.get(akey)
+            if prior and not force and Path(prior["path"]).is_file() and prior.get("last_modified") == topic.get("last_modified"):
+                continue
+            dest = page.parent / f"{topic['topic_id']}_att_{safe_name(ln['name'], 120)}"
+            adopted = dest.is_file() and not force and not prior
+            if not adopted:
+                try:
+                    data, _filename, ctype = await self.client.get_bytes(ln["url"])
+                except Exception as exc:  # noqa: BLE001
+                    results.append({"name": ln["name"], "from": topic.get("title"), "error": f"{exc.__class__.__name__}: {str(exc)[:160]}"})
+                    continue
+                if "text/html" in ctype:
+                    continue  # a page, not a document
+                dest.write_bytes(data)
+            text, err = self.text_cache.get(dest)
+            updates[akey] = {
+                "path": str(dest),
+                "ou": ou,
+                "module_code": mod.get("code"),
+                "title": ln["text"] or ln["name"],
+                "toc_path": topic.get("path"),
+                "kind": "attachment",
+                "parent_topic_id": topic["topic_id"],
+                "parent_title": topic.get("title"),
+                "source_url": ln["url"],
+                "last_modified": topic.get("last_modified"),
+                "size": dest.stat().st_size,
+                "downloaded_at": utcnow().isoformat(),
+            }
+            results.append({"path": str(dest), "from": topic.get("title"), "adopted": adopted, "text_chars": len(text), "text_error": err})
+        return results
 
     def _dest_path(self, mod: dict[str, Any], topic: dict[str, Any], filename: str | None, ctype: str) -> Path:
         name = filename or Path((topic.get("url") or "").split("?")[0]).name or safe_name(topic.get("title") or "untitled")
@@ -426,13 +514,16 @@ class NowService:
         folder.mkdir(parents=True, exist_ok=True)
         return dest
 
-    async def download_content(self, ou: int, topic_ids: list[int] | None = None, force: bool = False) -> dict[str, Any]:
+    async def download_content(self, ou: int, topic_ids: list[int] | None = None, force: bool = False,
+                               follow_links: bool = True) -> dict[str, Any]:
         mod = await self.module(ou)
         toc = await self.client.toc(ou)
         topics = flatten_toc(toc)
         wanted = set(topic_ids or [])
         index = self._load_index()
-        saved, skipped, failed, links = [], [], [], []
+        indexed_paths = {v.get("path") for v in index.values()}
+        updates: dict[str, Any] = {}
+        saved, skipped, adopted, failed, links, linked = [], [], [], [], [], []
         for t in topics:
             if wanted and t["topic_id"] not in wanted:
                 continue
@@ -442,35 +533,69 @@ class NowService:
                     links.append({"title": t["title"], "url": t["url"], "path": t["path"]})
                 continue
             prior = index.get(key)
+            entry: dict[str, Any] | None = None
             if prior and not force and Path(prior["path"]).is_file() and prior.get("last_modified") == t.get("last_modified"):
                 skipped.append(prior["path"])
-                continue
-            try:
-                data, filename, ctype = await self.client.topic_file(ou, t["topic_id"])
-            except Exception as exc:  # noqa: BLE001
-                failed.append({"topic_id": t["topic_id"], "title": t["title"], "error": f"{exc.__class__.__name__}: {str(exc)[:160]}"})
-                continue
-            dest = self._dest_path(mod, t, filename, ctype)
-            if dest.exists() and (not prior or Path(prior["path"]) != dest):
-                dest = dest.with_name(f"{t['topic_id']}_{dest.name}")
-            dest.write_bytes(data)
-            index[key] = {
-                "path": str(dest),
-                "ou": ou,
-                "module_code": mod.get("code"),
-                "title": t["title"],
-                "toc_path": t["path"],
-                "last_modified": t.get("last_modified"),
-                "size": len(data),
-                "downloaded_at": utcnow().isoformat(),
-            }
-            text, err = self.text_cache.get(dest)
-            saved.append({"path": str(dest), "size": len(data), "text_chars": len(text), "text_error": err})
-        self._save_index(index)
+                entry = prior
+            else:
+                orphan = None if (force or prior) else self._find_orphan(mod, t, indexed_paths)
+                if orphan is not None:
+                    # An earlier download left this file behind when its index entry was lost: adopt it.
+                    entry = {
+                        "path": str(orphan),
+                        "ou": ou,
+                        "module_code": mod.get("code"),
+                        "title": t["title"],
+                        "toc_path": t["path"],
+                        "last_modified": t.get("last_modified"),
+                        "size": orphan.stat().st_size,
+                        "downloaded_at": datetime.fromtimestamp(orphan.stat().st_mtime, tz=timezone.utc).isoformat(),
+                        "adopted": True,
+                    }
+                    updates[key] = entry
+                    indexed_paths.add(str(orphan))
+                    adopted.append(str(orphan))
+                else:
+                    try:
+                        data, filename, ctype = await self.client.topic_file(ou, t["topic_id"])
+                    except Exception as exc:  # noqa: BLE001
+                        failed.append({"topic_id": t["topic_id"], "title": t["title"], "error": f"{exc.__class__.__name__}: {str(exc)[:160]}"})
+                        continue
+                    dest = self._dest_path(mod, t, filename, ctype)
+                    # Only sidestep a name clash when another *indexed* topic owns that file; an
+                    # unindexed file with the same name is a leftover of this very topic.
+                    if dest.exists() and str(dest) in indexed_paths and (not prior or Path(prior["path"]) != dest):
+                        dest = dest.with_name(f"{t['topic_id']}_{dest.name}")
+                    dest.write_bytes(data)
+                    entry = {
+                        "path": str(dest),
+                        "ou": ou,
+                        "module_code": mod.get("code"),
+                        "title": t["title"],
+                        "toc_path": t["path"],
+                        "last_modified": t.get("last_modified"),
+                        "size": len(data),
+                        "downloaded_at": utcnow().isoformat(),
+                    }
+                    updates[key] = entry
+                    indexed_paths.add(str(dest))
+                    text, err = self.text_cache.get(dest)
+                    saved.append({"path": str(dest), "size": len(data), "text_chars": len(text), "text_error": err})
+            # Pages that merely link to the real document ("slides available from this link"):
+            # fetch what they point at, once per page version.
+            stamp = t.get("last_modified") or "none"
+            if follow_links and entry and Path(entry["path"]).suffix.lower() in (".html", ".htm") and (force or entry.get("links_checked") != stamp):
+                linked.extend(await self._follow_links(mod, t, entry, index, updates, force=force))
+                entry = dict(entry)
+                entry["links_checked"] = stamp
+                updates[key] = entry
+        await self._merge_index(updates)
         return {
             "ou": ou,
             "module_code": mod.get("code"),
             "saved": saved,
+            "linked_files": linked,
+            "adopted_existing": len(adopted),
             "skipped_unchanged": len(skipped),
             "failed": failed,
             "external_links_not_downloadable": links,
@@ -549,6 +674,80 @@ class NowService:
             if len(hits) >= max_results:
                 break
         return hits
+
+    # -- study packs ----------------------------------------------------------------
+
+    def _module_entries(self, ou: int) -> list[dict[str, Any]]:
+        index = self._load_index()
+        return [v for v in index.values() if v.get("ou") == ou and v.get("path") and Path(v["path"]).is_file()]
+
+    async def list_units(self, ou: int, refresh: bool = False) -> dict[str, Any]:
+        mod = await self.module(ou)
+        if refresh:
+            await self.download_content(ou)
+        entries = self._module_entries(ou)
+        return {
+            "ou": ou,
+            "module_code": mod.get("code"),
+            "module_name": mod.get("name"),
+            "units": units_summary(entries),
+            "note": "Pass a unit's week number or words from its name to get_study_pack." if entries else "Nothing downloaded yet: call download_content first.",
+        }
+
+    async def study_pack(self, ou: int, query: str | None = None, week: int | None = None,
+                         max_chars: int = 100000, refresh: bool = True) -> dict[str, Any]:
+        """Everything on NOW for one week/lecture, in reading order, with as much text as fits."""
+        mod = await self.module(ou)
+        refreshed: dict[str, Any] | None = None
+        if refresh:
+            try:
+                rep = await self.download_content(ou)
+                refreshed = {"new_files": len(rep["saved"]), "linked_files": len(rep["linked_files"]), "failed": len(rep["failed"])}
+            except Exception as exc:  # noqa: BLE001  (offline is fine: use what is on disk)
+                refreshed = {"error": f"{exc.__class__.__name__}: {str(exc)[:160]}"}
+        entries = self._module_entries(ou)
+        if not entries:
+            return {"error": "nothing downloaded for this module yet", "hint": "call download_content(ou) and try again"}
+        unit, scores = pick_unit(entries, query, week)
+        summary = units_summary(entries)
+        if unit is None:
+            return {
+                "error": "no_match",
+                "message": "Nothing in this module matches that; pick one of the units below (by week number or words from its name).",
+                "units": summary,
+            }
+        chosen = [e for e in entries if unit_of(e) == unit]
+        kinds: dict[str, int] = {}
+        for e in chosen:
+            kinds[classify_kind(e)] = kinds.get(classify_kind(e), 0) + 1
+        texts = {e["path"]: self.text_cache.get(Path(e["path"])) for e in chosen}
+        pack = assemble_pack(chosen, texts, max_chars)
+        uw = unit_week(unit)
+        prev_unit = next((u for u in summary if uw is not None and u["week"] == uw - 1), None)
+        next_unit = next((u for u in summary if uw is not None and u["week"] == uw + 1), None)
+        context = [
+            {"title": e.get("title"), "unit": unit_of(e), "path": e["path"]}
+            for e in entries
+            if unit_of(e).lower() in ADMIN_UNITS
+            and any(k in (e.get("title") or "").lower() for k in ("assessment", "brief", "overview", "coursework", "specification", "exam", "rubric", "template"))
+        ]
+        return {
+            "ou": ou,
+            "module_code": mod.get("code"),
+            "module_name": mod.get("name"),
+            "unit": unit,
+            "week": uw,
+            "matched_on": {"query": query, "week": week, "unit_score": scores.get(unit)},
+            "refreshed": refreshed,
+            "files": pack["files"],
+            "read_separately": pack["read_separately"],
+            "chars": {"total": pack["total_chars"], "included": pack["included_chars"], "limit": max_chars},
+            "previous_unit": {"unit": prev_unit["unit"], "titles": prev_unit["titles"]} if prev_unit else None,
+            "next_unit": {"unit": next_unit["unit"], "titles": next_unit["titles"]} if next_unit else None,
+            "module_context": context,
+            "kinds_here": kinds,
+            "how_to_continue": "read_document(path, offset=next_offset) finishes a truncated file; read_document(path) opens anything under read_separately; list_units(ou) shows every week.",
+        }
 
     # -- people, grades, discussions ----------------------------------------------
 
