@@ -11,7 +11,7 @@ if [[ "$before" != "$after" ]]; then
   echo "$(date -Is) updating ${before:0:7} -> ${after:0:7}"
   docker compose up -d --build
   docker image prune -f >/dev/null
-  /opt/ntu-now-ops/.venv/bin/pip install --quiet --upgrade "mcp>=2.2,<3" || true
+  if [[ -x /opt/ntu-now-ops/.venv/bin/pip ]]; then /opt/ntu-now-ops/.venv/bin/pip install --quiet --upgrade "mcp>=2.2,<3" || true; fi
 else
   echo "$(date -Is) up to date (${after:0:7})"
 fi
