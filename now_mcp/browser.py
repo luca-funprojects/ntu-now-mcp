@@ -104,10 +104,10 @@ class BrowserSession:
     def _url(self, target: str) -> str:
         if target.startswith("http"):
             host = (urlparse(target).hostname or "").lower()
-            allowed = [self.cfg.host.split(":")[0].lower(), "ntu.ac.uk", "microsoftonline.com", "live.com"]
+            allowed = [self.cfg.host.split(":")[0].lower(), "ntu.ac.uk", "myntuac.sharepoint.com", "microsoftonline.com", "live.com"]
             allowed += [h.strip().lower() for h in os.environ.get("NOW_BROWSER_ALLOWED_HOSTS", "").split(",") if h.strip()]
             if not any(host == a or host.endswith("." + a) for a in allowed):
-                raise ValueError(f"The browser only opens NTU pages (and Microsoft sign-in); {host} is not allowed. Add it to NOW_BROWSER_ALLOWED_HOSTS if it is one of NTU's services.")
+                raise ValueError(f"The browser only opens NTU pages (NOW, *.ntu.ac.uk, NTU's SharePoint) and Microsoft sign-in; {host} is not allowed. Add it to NOW_BROWSER_ALLOWED_HOSTS in .env if it is one of NTU's services.")
             return target
         return self.cfg.base_url + (target if target.startswith("/") else "/" + target)
 
