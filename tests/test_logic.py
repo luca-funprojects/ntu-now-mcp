@@ -202,3 +202,17 @@ def test_new_content_window_and_seen(tmp_path: Path, monkeypatch):
     assert r2["counts"] == {"topics": 0, "announcements": 0, "assignments": 0}
     r3 = asyncio.run(svc.new_content(hours=72, only_unseen=False))
     assert r3["counts"]["topics"] == 1
+
+
+def test_login_flow_target_url_is_restricted_to_ntu(tmp_path: Path):
+    from now_mcp.config import Config
+    from now_mcp.session import LoginFlow
+
+    cfg = Config(state_dir=tmp_path / "s", data_dir=tmp_path / "d")
+    f = LoginFlow(cfg, target_url="https://myntuac.sharepoint.com/sites/DT")
+    assert f.target_host == "myntuac.sharepoint.com"
+    assert LoginFlow(cfg, target_url="https://services.ntu.ac.uk/Timetabling/").target_host == "services.ntu.ac.uk"
+    assert LoginFlow(cfg).target_url is None
+    import pytest
+    with pytest.raises(ValueError):
+        LoginFlow(cfg, target_url="https://evil.example.com/")

@@ -19,11 +19,11 @@ from .config import Config
 from .session import LoginFlow
 
 
-async def run(headless: bool, fresh: bool, timeout: int) -> int:
+async def run(headless: bool, fresh: bool, timeout: int, target_url: str | None = None) -> int:
     cfg = Config.load()
     print(f"NOW: {cfg.base_url}")
     print(f"Session file: {cfg.state_file}")
-    flow = LoginFlow(cfg, headless=headless, max_seconds=timeout, reuse_state=not fresh)
+    flow = LoginFlow(cfg, headless=headless, max_seconds=timeout, reuse_state=not fresh, target_url=target_url)
     await flow.start()
     if not headless:
         print("\nA browser window has opened. Sign in to NOW as normal (username, password, MFA).")
@@ -55,9 +55,10 @@ def main() -> None:
     p.add_argument("--headless", action="store_true", help="no window; use NOW_USERNAME/NOW_PASSWORD from .env")
     p.add_argument("--fresh", action="store_true", help="ignore any previously saved session")
     p.add_argument("--timeout", type=int, default=600, help="seconds to wait for the sign-in (default 600)")
+    p.add_argument("--url", default=None, help="sign in to another NTU site (e.g. https://myntuac.sharepoint.com/) and add its cookies to the saved session")
     args = p.parse_args()
     warnings.filterwarnings("ignore", category=ResourceWarning)  # Windows pipe noise at exit
-    code = asyncio.run(run(args.headless, args.fresh, args.timeout))
+    code = asyncio.run(run(args.headless, args.fresh, args.timeout, args.url))
     sys.exit(code)
 
 

@@ -119,12 +119,13 @@ class NowClient:
         password: str | None = None,
         headless: bool = True,
         reuse_state: bool = True,
+        target_url: str | None = None,
     ) -> dict[str, Any]:
         """Start (or join) a login flow and wait up to ``wait_seconds`` for it."""
         if self.flow is not None and self.flow.state.status in ("running", "needs_input"):
             return await self.flow.wait(timeout=wait_seconds)
         self.flow = LoginFlow(
-            self.cfg, headless=headless, username=username, password=password, reuse_state=reuse_state
+            self.cfg, headless=headless, username=username, password=password, reuse_state=reuse_state, target_url=target_url
         )
         await self.flow.start()
         status = await self.flow.wait(timeout=wait_seconds)

@@ -141,9 +141,15 @@ class LoginFlow:
         password: str | None = None,
         max_seconds: int = 300,
         reuse_state: bool = True,
+        target_url: str | None = None,
     ) -> None:
         self.cfg = cfg
         self.headless = headless
+        # Another NTU-federated site to sign in to (SharePoint, the timetable service); NOW when empty.
+        self.target_url = (target_url or "").strip() or None
+        self.target_host = (urlparse(self.target_url).hostname or "").lower() if self.target_url else ""
+        if self.target_url and not (self.target_host.endswith(".ntu.ac.uk") or self.target_host == "myntuac.sharepoint.com" or self.target_host == (urlparse(cfg.base_url).hostname or "")):
+            raise ValueError(f"Only NTU sites can be signed in to from here; {self.target_host} is not one.")
         self.username = username or os.environ.get("NOW_USERNAME") or ""
         self.password = password or os.environ.get("NOW_PASSWORD") or ""
         self.max_seconds = max_seconds
@@ -182,8 +188,9 @@ class LoginFlow:
             ctx_kwargs["storage_state"] = str(self.cfg.state_file)
         self._ctx = await self._browser.new_context(**ctx_kwargs)
         self._page = await self._ctx.new_page()
+        self.state.message = f"Opening {self.target_host}" if self.target_url else "Opening NOW"
         try:
-            await self._page.goto(self.cfg.base_url + "/d2l/home", wait_until="domcontentloaded", timeout=60_000)
+            await self._page.goto(self.target_url or (self.cfg.base_url + "/d2l/home"), wait_until="domcontentloaded", timeout=60_000)
         except Exception as exc:  # noqa: BLE001 - we keep going; the loop will report
             self._note(f"Initial navigation problem: {exc.__class__.__name__}")
         await self._discover_lp_version()
@@ -274,6 +281,8 @@ class LoginFlow:
             pass
 
     async def _is_logged_in(self) -> bool:
+        if self.target_url:
+            return await self._target_reached()
         try:
             resp = await self._page.request.get(
                 f"{self.cfg.base_url}/d2l/api/lp/{self._lp_version}/users/whoami",
@@ -290,6 +299,22 @@ class LoginFlow:
         except Exception:  # noqa: BLE001
             return False
         return isinstance(data, dict) and "Identifier" in data
+
+    async def _target_reached(self) -> bool:
+        """For a non-NOW target: we are back on the target's host with no sign-in form in sight."""
+        try:
+            host = (urlparse(self._page.url).hostname or "").lower()
+        except Exception:  # noqa: BLE001
+            return False
+        if host != self.target_host and not host.endswith("." + self.target_host):
+            return False
+        if await self._visible("#userNameInput") or await self._visible("#passwordInput") or await self._visible("input[name='loginfmt']"):
+            return False
+        try:
+            await self._page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:  # noqa: BLE001
+            pass
+        return (urlparse(self._page.url).hostname or "").lower() == host
 
     async def _visible_text(self, limit: int = 1200) -> str:
         try:
@@ -315,7 +340,7 @@ class LoginFlow:
                     if await self._is_logged_in():
                         await self._save_state()
                         self.state.status = "done"
-                        self.state.message = "Signed in to NOW; session saved."
+                        self.state.message = f"Signed in to {self.target_host}; session saved." if self.target_url else "Signed in to NOW; session saved."
                         self.state.finished_at = time.time()
                         self._note("Signed in; storage state saved")
                         return
@@ -328,7 +353,7 @@ class LoginFlow:
                     self._note(f"step error: {exc.__class__.__name__}: {str(exc)[:120]}")
                 await asyncio.sleep(1.5)
             self.state.status = "failed"
-            self.state.message = f"Timed out after {self.max_seconds}s without reaching NOW."
+            self.state.message = f"Timed out after {self.max_seconds}s without reaching {self.target_host or 'NOW'}."
             self.state.finished_at = time.time()
         finally:
             await self.close()

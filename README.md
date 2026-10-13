@@ -72,6 +72,16 @@ password and usually an Authenticator prompt. The connector:
    Authenticator (`now_login_start` / `now_login_poll`); you never have to be
    at the laptop.
 
+### Other NTU sites (SharePoint, the timetable service)
+
+NOW's sign-in does not carry over to NTU's other services. To let the server's
+browser open them too, sign in to that site once and the cookies join the saved
+session: on the laptop `now-login --url https://myntuac.sharepoint.com/` (a
+window opens; sign in), then copy `state/now.storage.json` to the server; or,
+with `NOW_USERNAME`/`NOW_PASSWORD` in the server's `.env`, ask Claude to run
+`now_login_start(target_url="https://myntuac.sharepoint.com/")` and approve the
+Authenticator prompt. Only `*.ntu.ac.uk` and NTU's SharePoint are accepted.
+
 ## Setup on your laptop (10 minutes)
 
 Requires Python 3.11+.

@@ -117,10 +117,11 @@ async def now_status() -> Any:
 @guarded
 async def now_login_start(
     wait_seconds: Annotated[int, Field(description="How long to wait before returning progress (10-120).")] = 45,
+    target_url: Annotated[str | None, Field(description="Sign in to another NTU site instead of NOW (e.g. https://myntuac.sharepoint.com/ or https://services.ntu.ac.uk/Timetabling/Timetabling/home/index); its cookies join the saved session so now_browse can open it afterwards.")] = None,
 ) -> Any:
-    """Start signing in to NOW (headless). Uses NOW_USERNAME/NOW_PASSWORD from the server's .env; the student may then need to approve an MFA prompt in Microsoft Authenticator. Returns progress; call now_login_poll to follow it."""
+    """Start signing in (headless) to NOW, or to another NTU site via target_url. Uses NOW_USERNAME/NOW_PASSWORD from the server's .env; the student may then need to approve an MFA prompt in Microsoft Authenticator. Returns progress; call now_login_poll to follow it."""
     wait = max(10, min(120, wait_seconds))
-    status = await client.start_login(wait_seconds=wait)
+    status = await client.start_login(wait_seconds=wait, target_url=target_url)
     status["next"] = {
         "done": "Signed in. Carry on with the other tools.",
         "needs_input": "Ask the student to do what the message says, then call now_login_poll.",
